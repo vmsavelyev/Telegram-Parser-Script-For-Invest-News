@@ -76,17 +76,35 @@
     }
 
     // тикеры компаний, торгующихся на Мосбирже (в латинской транслитерации, как их пишут
-    // в хэштегах/кэштегах) — используются, чтобы отличать "свои" тикеры от иностранных
+    // в хэштегах/кэштегах) — используются, чтобы отличать "свои" тикеры от иностранных.
+    // Список выгружен из реального справочника Московской биржи (ISS API, доска TQBR —
+    // акции, https://iss.moex.com/iss/engines/stock/markets/shares/boards/TQBR/securities.json),
+    // паевые фонды (ПИФ/БПИФ/ОПИФ/ЗПИФ/ИПИФ) и ETF исключены, добавлены несколько
+    // исторических алиасов тикеров (novatek, poly/polymetal, qiwi, five, reno, tcsg/tcsi
+    // и т.п.), которые могли встречаться в старых постах до ребрендинга/делистинга.
     const MOEX_TICKERS = new Set([
-        "sber", "sberp", "gazp", "rosn", "lkoh", "novatek", "nvtk", "gmkn", "plzl", "polymetal", "poly",
-        "magn", "chmf", "nlmk", "tatn", "tatnp", "sngs", "sngsp", "irao", "hydr", "rtkm", "rtkmp",
-        "aflt", "ozon", "yndx", "five", "mvid", "fesh", "rual", "pikk", "lsng", "sgzh", "unac", "kmaz",
-        "kazt", "utar", "dvec", "slen", "vkco", "trnfp", "bane", "banep", "rasp", "selg", "enpg", "tcsg",
-        "tcsi", "qiwi", "mrkc", "mrkp", "mrkv", "mrkz", "fees", "bspb", "cbom", "svcb", "leas", "posi",
-        "sofl", "astr", "deli", "wush", "moex", "head", "vtbr", "alrs", "mtss", "mgnt", "phor",
-        "akrn", "kzos", "nkhp", "russ", "abio", "genk", "belu", "etln", "smlt", "pols", "lent", "hnfg",
-        "reno", "rnft", "kmez", "kche", "brzl", "ufos", "yakg", "kube", "elfv", "ozpn", "novabev",
-        "afks", "okey", "zaym", "baza", "wb", "ragr",
+        "abio", "abrd", "afks", "aflt", "akrn", "alrs", "amez", "apri", "aptk", "aqua", "arsa", "assb", "astr",
+        "avan", "bane", "banep", "baza", "belu", "bisvp", "blng", "brzl", "bspb", "bspbp", "btbr", "carm", "cbom",
+        "chgz", "chkz", "chmf", "chmk", "cnru", "cntl", "cntlp", "data", "deli", "dias", "diod", "domrf", "dvec",
+        "dzrd", "dzrdp", "eelt", "elfv", "elmt", "enpg", "etln", "eutr", "evrz", "fees", "fesh", "five", "fixr",
+        "flot", "gaza", "gazap", "gazc", "gazp", "gazs", "gazt", "gche", "geco", "gema", "gemc", "glrx", "gmkn",
+        "gtrk", "head", "himcp", "hnfg", "hydr", "igst", "igstp", "incb", "irao", "irkt", "ivat", "jnos", "jnosp",
+        "kazt", "kaztp", "kbsb", "kche", "kchep", "kfba", "kgkc", "kgkcp", "klsb", "klvz", "kmaz", "kmez", "kogk",
+        "krkn", "krknp", "krkop", "krot", "krotp", "krsb", "krsbp", "kube", "kuzb", "kzos", "kzosp", "leas",
+        "lent", "life", "lkoh", "lmbz", "lnzl", "lnzlp", "lpsb", "lsng", "lsngp", "lsrg", "lvhk", "mage", "magep",
+        "magn", "mbnk", "mdmg", "mfgs", "mfgsp", "mgkl", "mgnt", "mgnz", "mgts", "mgtsp", "misb", "misbp", "moex",
+        "mrkc", "mrkk", "mrkp", "mrks", "mrku", "mrkv", "mrky", "mrkz", "mrsb", "msng", "msrs", "mstt", "mtlr",
+        "mtlrp", "mtss", "mvid", "nauk", "nfaz", "nkhp", "nknc", "nkncp", "nksh", "nlmk", "nmtp", "nnsb", "nnsbp",
+        "novabev", "novatek", "nsvz", "nvtk", "ogkb", "okey", "omzzp", "ozon", "ozph", "ozpn", "paza", "phor",
+        "pikk", "plzl", "pmsb", "pmsbp", "poly", "polymetal", "posi", "prfn", "prmb", "prmd", "qiwi", "ragr",
+        "rasp", "rbcm", "rdrb", "reni", "reno", "rgss", "rkke", "rnft", "rolo", "rosn", "rost", "rtgz", "rtkm",
+        "rtkmp", "rtsb", "rtsbp", "rual", "rusi", "russ", "rzsb", "sago", "sagop", "sare", "sarep", "sber",
+        "sberp", "selg", "sfin", "sgzh", "sibn", "slen", "smlt", "sngs", "sngsp", "sofl", "spbe", "stsb", "stsbp",
+        "svav", "svcb", "svet", "svetp", "t", "tasb", "tasbp", "tatn", "tatnp", "tcsg", "tcsi", "tgka", "tgkb",
+        "tgkbp", "tgkn", "tnse", "tors", "torsp", "trmk", "trnfp", "ttlk", "tuza", "ugld", "ukuz", "unac", "unkl",
+        "upro", "urkz", "usbn", "utar", "uwgn", "veon", "vgsb", "vgsbp", "vjgz", "vjgzp", "vkco", "vlhz", "vrsb",
+        "vrsbp", "vseh", "vsmo", "vsyd", "vsydp", "vtbr", "wb", "wtcm", "wtcmp", "wush", "x5", "yakg", "ydex",
+        "yken", "ykenp", "yndx", "yrsb", "yrsbp", "zaym", "zill", "zvez",
     ]);
 
     // аббревиатуры и общие термины, которые внешне похожи на тикер (латиница, 2-6 букв),
@@ -283,6 +301,324 @@
     const FOREIGN_INSTITUTIONS = /goldman sachs|jpmorgan|jp morgan|morgan stanley|\bmorgan\b|bank of america|\bbofa\b|citigroup|deutsche bank|barclays|\bubs\b|credit suisse|wells fargo|societe generale|socgen|hsbc|bnp paribas|nomura|wedbush|evercore|moody'?s|fitch\b|\bs&p\b/i;
     const FOREIGN_MACRO = /\bpmi\b|\bism\b|nonfarm|non-farm|нонфарм|chicago pmi|dallas fed|core cpi|индекс потребительского доверия|\bifo\b|индекс делового климата|индекс цен производителей|manufacturing\/services\/composite/;
 
+    // человекочитаемые названия для тикеров MOEX_TICKERS — используются в колонке
+    // "Тема". Выгружены из справочника Мосбиржи (см. комментарий у MOEX_TICKERS) с
+    // ручными уточнениями для читаемости; для тикера, не попавшего в карту (редкий
+    // случай), в качестве темы используется сам тикер в верхнем регистре.
+    const TICKER_NAMES = {
+        abio: "Артген",
+        abrd: "АбрауДюрсо",
+        afks: "АФК Система",
+        aflt: "Аэрофлот",
+        akrn: "Акрон",
+        alrs: "АЛРОСА",
+        amez: "АшинскийМЗ",
+        apri: "АПРИ",
+        aptk: "Аптеки36и6",
+        aqua: "Инарктика",
+        arsa: "Арсагера",
+        assb: "АстрЭнСб",
+        astr: "Группа Астра",
+        avan: "Авангрд",
+        bane: "Башнефть",
+        banep: "Башнефть",
+        baza: "БАЗИС",
+        belu: "НоваБев",
+        bisvp: "БашИнСв",
+        blng: "Белон",
+        brzl: "БурЗолото",
+        bspb: "Банк Санкт-Петербург",
+        bspbp: "Банк Санкт-Петербург",
+        btbr: "В2В-РТС",
+        carm: "СТГ",
+        cbom: "МКБ",
+        chgz: "РН-ЗапСиб",
+        chkz: "ЧКПЗ",
+        chmf: "Северсталь",
+        chmk: "ЧМК",
+        cnru: "Циан",
+        cntl: "Телеграф",
+        cntlp: "Телеграф-п",
+        data: "Аренадата",
+        deli: "Делимобиль",
+        dias: "Диасофт",
+        diod: "Завод ДИОД",
+        domrf: "ДОМ.РФ",
+        dvec: "ДЭК",
+        dzrd: "ДонскЗР",
+        dzrdp: "ДонскЗР п",
+        eelt: "ЕвроЭлтех",
+        elfv: "ЭЛ5Энер",
+        elmt: "Элемент",
+        enpg: "Эн+ Групп",
+        etln: "Эталон",
+        eutr: "ЕвроТранс",
+        evrz: "ЕВРАЗ",
+        fees: "Россети (ФСК)",
+        fesh: "ДВМП (FESCO)",
+        five: "X5 Group",
+        fixr: "Фикс Прайс",
+        flot: "Совкомфлот",
+        gaza: "ГАЗ",
+        gazap: "ГАЗ",
+        gazc: "ГАЗКОН",
+        gazp: "Газпром",
+        gazs: "ГАЗ-сервис",
+        gazt: "ГАЗ-Тек",
+        gche: "Черкизово",
+        geco: "ГЕНЕТИКО",
+        gema: "ММЦБ",
+        gemc: "ЮМГ",
+        glrx: "ГЛОРАКС",
+        gmkn: "Норникель",
+        gtrk: "ГТМ",
+        head: "HeadHunter",
+        himcp: "Химпром",
+        hnfg: "Хендерсон",
+        hydr: "РусГидро",
+        igst: "Ижсталь2",
+        igstp: "Ижсталь",
+        incb: "Инкаб",
+        irao: "Интер РАО",
+        irkt: "Яковлев-3",
+        ivat: "ИВА",
+        jnos: "Славн-ЯНОС",
+        jnosp: "Слав-ЯНОСп",
+        kazt: "Куйбазот",
+        kaztp: "Куйбазот-п",
+        kbsb: "ТНСэКубань",
+        kche: "КамчатЭ",
+        kchep: "КамчатЭ",
+        kfba: "ИНГРАД",
+        kgkc: "КурганГК",
+        kgkcp: "КурганГК",
+        klsb: "КалужскСК",
+        klvz: "Кристалл",
+        kmaz: "КАМАЗ",
+        kmez: "КМЗ",
+        kogk: "КоршГОК",
+        krkn: "СаратНПЗ",
+        krknp: "СаратНПЗ-п",
+        krkop: "ТКЗКК",
+        krot: "КрасОкт",
+        krotp: "КрасОкт-1п",
+        krsb: "Красэсб",
+        krsbp: "Красэсб",
+        kube: "Кубаньэнерго",
+        kuzb: "КузнецкийБ",
+        kzos: "Казаньоргсинтез",
+        kzosp: "Казаньоргсинтез",
+        leas: "Европлан",
+        lent: "Лента",
+        life: "Фармсинтез",
+        lkoh: "Лукойл",
+        lmbz: "Ламбумиз",
+        lnzl: "Лензолото",
+        lnzlp: "Лензол.",
+        lpsb: "ЛЭСК",
+        lsng: "Ленэнерго",
+        lsngp: "Ленэнерго",
+        lsrg: "ЛСР",
+        lvhk: "Левенгук",
+        mage: "МагадЭн",
+        magep: "МагадЭн",
+        magn: "ММК",
+        mbnk: "МТС Банк",
+        mdmg: "МД Медикал Груп",
+        mfgs: "Мегион",
+        mfgsp: "Мегион",
+        mgkl: "МГКЛ",
+        mgnt: "Магнит",
+        mgnz: "СМЗ",
+        mgts: "МГТС-5",
+        mgtsp: "МГТС-4",
+        misb: "ТНСэнМарЭл",
+        misbp: "ТНСэМаЭл-п",
+        moex: "Московская биржа",
+        mrkc: "РоссЦентр",
+        mrkk: "Россети СК",
+        mrkp: "РСетиЦП",
+        mrks: "РсетСиб",
+        mrku: "Россети Ур",
+        mrkv: "РсетВол",
+        mrky: "РоссЮг",
+        mrkz: "РСетиСЗ",
+        mrsb: "МордЭнСб",
+        msng: "МосЭнерго",
+        msrs: "РСетиМР",
+        mstt: "Мостотрест",
+        mtlr: "Мечел",
+        mtlrp: "Мечел",
+        mtss: "МТС",
+        mvid: "М.Видео",
+        nauk: "НПОНаука",
+        nfaz: "НЕФАЗ",
+        nkhp: "НКХП",
+        nknc: "НКНХ",
+        nkncp: "НКНХ",
+        nksh: "Нижкамшина",
+        nlmk: "НЛМК",
+        nmtp: "НМТП",
+        nnsb: "ТНСэнНН",
+        nnsbp: "ТНСэнНН",
+        novabev: "НоваБев",
+        novatek: "НОВАТЭК",
+        nsvz: "НаукаСвяз",
+        nvtk: "НОВАТЭК",
+        ogkb: "ОГК-2",
+        okey: "О'КЕЙ",
+        omzzp: "ОМЗ",
+        ozon: "Ozon",
+        ozph: "Озон Фармацевтика",
+        ozpn: "Озон Фармацевтика",
+        paza: "ПавлАвт",
+        phor: "ФосАгро",
+        pikk: "ПИК",
+        plzl: "Полюс",
+        pmsb: "ПермьЭнСб",
+        pmsbp: "ПермьЭнС-п",
+        poly: "Полиметалл",
+        polymetal: "Полиметалл",
+        posi: "Positive Technologies",
+        prfn: "ТЕПЛАНТ",
+        prmb: "Приморье",
+        prmd: "Промомед",
+        qiwi: "QIWI",
+        ragr: "РусАгро",
+        rasp: "Распадская",
+        rbcm: "ГК РБК",
+        rdrb: "РДБанк",
+        reni: "Ренессанс Страхование",
+        reno: "Ренессанс Страхование",
+        rgss: "РГС СК",
+        rkke: "ЭнергияРКК",
+        rnft: "РуссНефть",
+        rolo: "Русолово",
+        rosn: "Роснефть",
+        rost: "РОСИНТЕР",
+        rtgz: "ГР Ростов",
+        rtkm: "Ростелеком",
+        rtkmp: "Ростелеком",
+        rtsb: "ТНСэнРст",
+        rtsbp: "ТНСэнРст-п",
+        rual: "РУСАЛ",
+        rusi: "ИКРУСС-ИНВ",
+        russ: "Русолово",
+        rzsb: "РязЭнСб",
+        sago: "СамарЭн",
+        sagop: "СамарЭн",
+        sare: "СаратЭн",
+        sarep: "СаратЭн",
+        sber: "Сбербанк",
+        sberp: "Сбербанк",
+        selg: "Селигдар",
+        sfin: "ЭсЭфАй",
+        sgzh: "Сегежа",
+        sibn: "Газпром нефть",
+        slen: "Сахэнер",
+        smlt: "Самолет",
+        sngs: "Сургутнефтегаз",
+        sngsp: "Сургутнефтегаз",
+        sofl: "Softline",
+        spbe: "СПБ Биржа",
+        stsb: "ЕГП",
+        stsbp: "ЕГП",
+        svav: "СОЛЛЕРС",
+        svcb: "Совкомбанк",
+        svet: "Светофор",
+        svetp: "Светофор п",
+        t: "Т-Технологии",
+        tasb: "ТамбЭнСб",
+        tasbp: "ТамбЭнСб-п",
+        tatn: "Татнефть",
+        tatnp: "Татнефть",
+        tcsg: "Т-Технологии",
+        tcsi: "Т-Технологии",
+        tgka: "ТГК-1",
+        tgkb: "ТГК-2",
+        tgkbp: "ТГК-2",
+        tgkn: "ТГК-14",
+        tnse: "ТНСэнрг",
+        tors: "РСТомск",
+        torsp: "РСТомск",
+        trmk: "ТМК",
+        trnfp: "Транснефть",
+        ttlk: "Таттел.",
+        tuza: "ТЗА",
+        ugld: "ЮГК",
+        ukuz: "ЮжКузб.",
+        unac: "ОАК",
+        unkl: "ЮУНК",
+        upro: "Юнипро",
+        urkz: "УрКузница",
+        usbn: "УралСиб",
+        utar: "ЮТэйр",
+        uwgn: "ОВК",
+        veon: "VEON",
+        vgsb: "ВолгЭнСб",
+        vgsbp: "ВолгЭнСб-п",
+        vjgz: "Варьеган",
+        vjgzp: "Варьеган-п",
+        vkco: "VK",
+        vlhz: "ВХЗ",
+        vrsb: "ТНСэнВорон",
+        vrsbp: "ТНСэнВор-п",
+        vseh: "ВИ.ру",
+        vsmo: "ВСМПО-АВИСМА",
+        vsyd: "ВыбСудЗ",
+        vsydp: "ВыбСудЗ",
+        vtbr: "ВТБ",
+        wb: "Wildberries",
+        wtcm: "ЦМТ",
+        wtcmp: "ЦМТ",
+        wush: "Whoosh",
+        x5: "X5 Group",
+        yakg: "ЯТЭК",
+        ydex: "Яндекс",
+        yken: "Якутскэнрг",
+        ykenp: "Якутскэн-п",
+        yndx: "Яндекс",
+        yrsb: "ТНСэнЯр",
+        yrsbp: "ТНСэнЯр-п",
+        zaym: "Займер",
+        zill: "ЗИЛ",
+        zvez: "ЗВЕЗДА",
+    };
+
+    // конфликт Россия-Украина: НАТО/ВСУ/СВО/санкции-повод, дроны и т.п.
+    function isUkraineConflict(t) {
+        return wbRe(["нато", "всу"]).test(t) || isSvoNews(t) ||
+            /украин|спецоперац|зеленск|донбасс|мобилизац/.test(t) || DRONE_ATTACK.test(t);
+    }
+    // конфликт США-Иран (Ормузский пролив и т.п.)
+    function isIranConflict(t) {
+        return CONFLICT_ZONE_EXEMPT.test(t);
+    }
+    // тема ЦБ: ставка, действия ЦБ РФ, инфляция, бюджет РФ
+    function isCbTopic(t) {
+        return isRuRateMention(t) || isCbRfAction(t) || RU_INFLATION_DATA.test(t) || RU_BUDGET.test(t);
+    }
+    // название российской компании — по тикеру-хэштегу из MOEX_TICKERS (переводится в
+    // читаемое имя через TICKER_NAMES) либо, если тикера в тексте нет, но событие явно
+    // корпоративное (isRuCorporateEvent), обобщённой пометкой
+    function getCompanyTopic(t) {
+        const tickers = [...new Set(extractLatinTickers(t).filter(tk => MOEX_TICKERS.has(tk)))];
+        if (tickers.length) return tickers.map(tk => TICKER_NAMES[tk] || tk.toUpperCase()).join(", ");
+        if (isRuCorporateEvent(t)) return "Российская компания";
+        return "";
+    }
+    // тема новости — заполняется только для "Важно": название компании, "Украина", "Иран"
+    // или "ЦБ" (порядок проверки соответствует приоритету, заданному пользователем)
+    function classifyTopic(t, importance) {
+        if (importance !== "Важно") return "";
+        const company = getCompanyTopic(t);
+        if (company) return company;
+        if (isUkraineConflict(t)) return "Украина";
+        if (isIranConflict(t)) return "Иран";
+        if (isCbTopic(t)) return "ЦБ";
+        return "";
+    }
+
     function classifyImportance(rawText) {
         const t = rawText.toLowerCase();
 
@@ -463,7 +799,8 @@
         // чтобы сообщения без timestamp не перемешивались с сообщениями, у которых он есть
         const timing = fmtTiming(date, time, ts);
         const importance = classifyImportance(text);
-        if (!data.has(key)) data.set(key, { sort: ts || (1e12 + data.size), line: `${importance}\t${text}\t${date}\t${time}\t${CHANNEL}\t${timing}` });
+        const topic = classifyTopic(text.toLowerCase(), importance);
+        if (!data.has(key)) data.set(key, { sort: ts || (1e12 + data.size), line: `${importance}\t${text}\t${date}\t${time}\t${CHANNEL}\t${timing}\t${topic}` });
         return true;
     }
 
@@ -549,7 +886,7 @@
     }
 
     const rows = Array.from(data.values()).sort((a, b) => a.sort - b.sort).map(v => v.line);
-    const result = "Надо брать\tТекст сообщения\tДата\tВремя\tКанал\tТайминг\n" + rows.join("\n");
+    const result = "Надо брать\tТекст сообщения\tДата\tВремя\tКанал\tТайминг\tТема\n" + rows.join("\n");
     console.log(result);
 
     const secs = ((performance.now() - started) / 1000).toFixed(1);
