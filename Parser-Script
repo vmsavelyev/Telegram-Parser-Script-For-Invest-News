@@ -36,6 +36,42 @@
         return r.width > 10 && r.height > 10;
     };
 
+    // ---------- название канала ----------
+    function getChannelName() {
+        const selectors = [
+            "#column-center .sidebar-header .peer-title",
+            "#column-center .chat-info .peer-title",
+            ".sidebar-header .peer-title",
+            ".chat-info .peer-title",
+            ".top .peer-title"
+        ];
+        for (const sel of selectors) {
+            const el = document.querySelector(sel);
+            if (el && isShown(el)) {
+                const t = cleanText(el.innerText || el.textContent || "");
+                if (t) return t;
+            }
+        }
+        return cleanText(document.title || "");
+    }
+    const CHANNEL = getChannelName();
+
+    function fmtTiming(dateStr, timeStr, ts) {
+        let h, mm, ss;
+        if (ts) {
+            const d = new Date(ts * 1000);
+            h = d.getHours();
+            mm = pad(d.getMinutes());
+            ss = pad(d.getSeconds());
+        } else {
+            const m = timeStr.match(/^(\d{1,2}):(\d{2})$/);
+            h = m ? Number(m[1]) : 0;
+            mm = m ? m[2] : "00";
+            ss = "00";
+        }
+        return `${dateStr} ${h}:${mm}:${ss}`;
+    }
+
     // ---------- поиск контейнера ----------
     function scrollableAncestors(el) {
         const out = [];
@@ -159,7 +195,8 @@
         const key = id || `${time}||${text.slice(0, 200)}`;
         // ts (unix-секунды, ~1.7e9) и порядковый номер живут в разных диапазонах,
         // чтобы сообщения без timestamp не перемешивались с сообщениями, у которых он есть
-        if (!data.has(key)) data.set(key, { sort: ts || (1e12 + data.size), line: `${text}\t${date}\t${time}` });
+        const timing = fmtTiming(date, time, ts);
+        if (!data.has(key)) data.set(key, { sort: ts || (1e12 + data.size), line: `${text}\t${date}\t${time}\t${CHANNEL}\t${timing}` });
         return true;
     }
 
@@ -245,7 +282,7 @@
     }
 
     const rows = Array.from(data.values()).sort((a, b) => a.sort - b.sort).map(v => v.line);
-    const result = "Текст сообщения\tДата\tВремя\n" + rows.join("\n");
+    const result = "Текст сообщения\tДата\tВремя\tКанал\tТайминг\n" + rows.join("\n");
     console.log(result);
 
     const secs = ((performance.now() - started) / 1000).toFixed(1);
