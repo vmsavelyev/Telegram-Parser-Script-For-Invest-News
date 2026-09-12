@@ -1,7 +1,5 @@
 (async function () {
     const RAW = prompt(
-        "ВАЖНО: перед запуском долистайте канал вручную до самого начала (до первых сообщений) —\n" +
-        "скрипт скроллит вниз и соберёт только то, что идёт после текущей позиции.\n\n" +
         "Какую дату поставить всем сообщениям? Формат ДД.ММ.ГГГГ\n" +
         "Или введите: авто — чтобы брать реальную дату каждого поста.",
         "19.08.2026"
@@ -22,12 +20,17 @@
     const MIN_WAIT_MS  = 10;
     const MAX_WAIT_MS  = 900;
     const MAX_STEPS    = 5000;
-    const DIRECTION    = 1;
+    let DIRECTION      = 1;
+    let STOP_DATE      = null;
 
     const sleep = ms => new Promise(r => setTimeout(r, ms));
     const pad = n => String(n).padStart(2, "0");
     const fmtTime = d => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
     const fmtDate = d => `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()}`;
+    const parseRuDate = s => {
+        const m = s && s.match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
+        return m ? new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1])) : null;
+    };
     const cleanText = t => t.replace(/\r?\n|\r|\t/g, " ").replace(/\s+/g, " ").trim();
 
     const isShown = el => {
@@ -55,6 +58,72 @@
         return cleanText(document.title || "");
     }
     const CHANNEL = getChannelName();
+
+    // ---------- выбор направления скролла ----------
+    // "Вниз" — крутим к новым сообщениям до конца ленты (как раньше по умолчанию).
+    // "Вверх" — крутим к старым сообщениям и останавливаемся по достижении даты,
+    // выбранной пользователем через нативный календарь (<input type="date">), так
+    // как window.prompt() календаря не даёт.
+    function chooseDirection() {
+        return new Promise(resolve => {
+            const overlay = document.createElement("div");
+            overlay.style = `position:fixed;inset:0;z-index:9999999;background:rgba(0,0,0,.5);
+                             display:flex;align-items:center;justify-content:center;`;
+            overlay.innerHTML = `
+                <div style="background:#202020;color:#fff;padding:24px;border-radius:12px;
+                            font:14px/1.5 Arial,sans-serif;max-width:360px;box-shadow:0 8px 30px rgba(0,0,0,.5);">
+                    <b style="font-size:16px;">Направление сбора</b>
+                    <div id="tg-dir-step1" style="margin-top:14px;">
+                        <p style="margin:0 0 12px;">Куда крутить ленту?</p>
+                        <button id="tg-dir-up" style="width:100%;margin-bottom:8px;padding:10px;background:#2b5278;
+                                color:#fff;border:0;border-radius:6px;cursor:pointer;font-weight:bold;">
+                            Вверх (к старым, до даты)
+                        </button>
+                        <button id="tg-dir-down" style="width:100%;padding:10px;background:#2b5278;
+                                color:#fff;border:0;border-radius:6px;cursor:pointer;font-weight:bold;">
+                            Вниз (до конца ленты)
+                        </button>
+                    </div>
+                    <div id="tg-dir-step2" style="margin-top:14px;display:none;">
+                        <p style="margin:0 0 12px;">До какой даты крутить (включительно)?</p>
+                        <input id="tg-dir-date" type="date" style="width:100%;padding:8px;border-radius:6px;
+                               border:0;font-size:14px;box-sizing:border-box;">
+                        <button id="tg-dir-ok" style="width:100%;margin-top:10px;padding:10px;background:#2b5278;
+                                color:#fff;border:0;border-radius:6px;cursor:pointer;font-weight:bold;">
+                            Начать
+                        </button>
+                    </div>
+                </div>`;
+            document.body.appendChild(overlay);
+
+            overlay.querySelector("#tg-dir-down").onclick = () => {
+                overlay.remove();
+                resolve({ direction: 1, stopDate: null });
+            };
+            overlay.querySelector("#tg-dir-up").onclick = () => {
+                overlay.querySelector("#tg-dir-step1").style.display = "none";
+                overlay.querySelector("#tg-dir-step2").style.display = "block";
+            };
+            overlay.querySelector("#tg-dir-ok").onclick = () => {
+                const v = overlay.querySelector("#tg-dir-date").value; // YYYY-MM-DD
+                if (!v) { alert("Выберите дату."); return; }
+                const [y, m, d] = v.split("-").map(Number);
+                overlay.remove();
+                resolve({ direction: -1, stopDate: new Date(y, m - 1, d) });
+            };
+        });
+    }
+    const dirChoice = await chooseDirection();
+    DIRECTION = dirChoice.direction;
+    STOP_DATE = dirChoice.stopDate;
+
+    alert(
+        DIRECTION === 1
+            ? "Долистайте канал вручную вверх до самого начала (до первых сообщений) —\n" +
+              "скрипт будет скроллить вниз и соберёт то, что идёт после текущей позиции, до конца ленты."
+            : "Долистайте канал вручную вниз до самых свежих сообщений —\n" +
+              `скрипт будет скроллить вверх, пока не дойдёт до ${fmtDate(STOP_DATE)} (включительно).`
+    );
 
     // ---------- разметка важности ----------
     // Списки ключевых слов/паттернов ниже можно донастраивать под себя —
@@ -744,6 +813,7 @@
     const data = new Map();
     const pending = new Set();
     let mutated = false;
+    let minSeenDate = null; // при скролле вверх — самая старая дата из уже собранных
 
     const isRealMessage = b =>
         !b.classList.contains("service") && !b.classList.contains("is-date") &&
@@ -808,13 +878,17 @@
         const text = extractMessageText(b);
         const { time, date, ts } = extractStamp(b);
         if (!text || !time) { b.__t = (b.__t || 0) + 1; return b.__t > 25; }
+        if (DIRECTION === -1 && STOP_DATE) {
+            const d = parseRuDate(date);
+            if (d && (!minSeenDate || d < minSeenDate)) minSeenDate = d;
+        }
         const key = id || `${time}||${text.slice(0, 200)}`;
         // ts (unix-секунды, ~1.7e9) и порядковый номер живут в разных диапазонах,
         // чтобы сообщения без timestamp не перемешивались с сообщениями, у которых он есть
         const timing = fmtTiming(date, time, ts);
         const importance = classifyImportance(text);
         const topic = classifyTopic(text.toLowerCase(), importance);
-        if (!data.has(key)) data.set(key, { sort: ts || (1e12 + data.size), line: `${importance}\t${text}\t${date}\t${time}\t${CHANNEL}\t${timing}\t${topic}` });
+        if (!data.has(key)) data.set(key, { sort: ts || (1e12 + data.size), date, line: `${importance}\t${text}\t${date}\t${time}\t${CHANNEL}\t${timing}\t${topic}` });
         return true;
     }
 
@@ -856,6 +930,7 @@
     panel.innerHTML = `<b>TG Export (Web K)</b><br>
         Собрано: <span id="tg-export-count">0</span><br>
         Шаг: <span id="tg-export-step">0</span> <span id="tg-export-eta"></span><br>
+        ${STOP_DATE ? `Дошли до: <span id="tg-export-date">—</span> (цель: ${fmtDate(STOP_DATE)})<br>` : ""}
         <button id="tg-export-stop" style="margin-top:8px;padding:6px 10px;background:#d33;color:#fff;
                 border:0;border-radius:6px;cursor:pointer;font-weight:bold;">Остановить и выгрузить</button>`;
     document.body.appendChild(panel);
@@ -883,8 +958,21 @@
         if (Math.abs(scroller.scrollTop - before) < 1) same++; else same = 0;
         if (same >= 5) { console.log("[TG-K] Конец ленты или скролл заблокирован."); break; }
 
+        // докручиваем на один день дальше цели, чтобы гарантированно догрузить
+        // ВСЕ сообщения самого целевого дня (иначе можно остановиться на середине
+        // дня, пока часть его сообщений ещё не подгрузилась) — лишний день потом
+        // отрезается фильтром при формировании итоговой таблицы
+        if (DIRECTION === -1 && STOP_DATE && minSeenDate && minSeenDate < STOP_DATE) {
+            console.log("[TG-K] Достигнута заданная дата остановки:", fmtDate(STOP_DATE));
+            break;
+        }
+
         document.getElementById("tg-export-eta").innerText =
             `${((performance.now() - started) / 1000).toFixed(1)} c`;
+        if (STOP_DATE && minSeenDate) {
+            const dEl = document.getElementById("tg-export-date");
+            if (dEl) dEl.innerText = fmtDate(minSeenDate);
+        }
     }
 
     await waitRender();
@@ -899,7 +987,17 @@
         return;
     }
 
-    const rows = Array.from(data.values()).sort((a, b) => a.sort - b.sort).map(v => v.line);
+    // при скролле вверх до даты мы намеренно докручиваем на один день дальше цели
+    // (см. цикл выше) — теперь отрезаем всё, что старше выбранной даты, оставляя
+    // её включительно
+    let values = Array.from(data.values());
+    if (DIRECTION === -1 && STOP_DATE) {
+        values = values.filter(v => {
+            const d = parseRuDate(v.date);
+            return !d || d >= STOP_DATE;
+        });
+    }
+    const rows = values.sort((a, b) => a.sort - b.sort).map(v => v.line);
     const result = "Надо брать\tТекст сообщения\tДата\tВремя\tКанал\tТайминг\tТема\n" + rows.join("\n");
     console.log(result);
 
