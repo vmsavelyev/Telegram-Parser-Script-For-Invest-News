@@ -56,6 +56,54 @@
     }
     const CHANNEL = getChannelName();
 
+    // ---------- разметка важности ----------
+    // Списки ключевых слов/паттернов ниже можно донастраивать под себя —
+    // в первую очередь имеет смысл дополнять именно их, а не менять логику функции.
+
+    // "Важно": отчётность МСФО/РСБУ российских публичных компаний, ключевая ставка ЦБ РФ,
+    // санкции/НАТО/конфликт на Украине, IPO/SPO, размещение ОФЗ, первые лица (геополитика)
+    const IMPORTANT_PATTERNS = [
+        /мсфо/, /рсбу/,
+        /ключевая ставка/, /ставк\w+ цб/, /цб рф.{0,20}ставк/, /банк россии.{0,20}ставк/,
+        /санкци/, /\bнато\b/,
+        /украин/, /\bсво\b/, /спецоперац/, /зеленск/, /донбасс/, /\bвсу\b/,
+        /\bipo\b/, /\bspo\b/, /\bофз\b/,
+        /путин/, /песков/, /фон дер ляйен/, /урсула/,
+    ];
+
+    // "Не важно": не биржевая информация (итоги/события дня), факт курса валют без контекста,
+    // движение акции/индекса пост-фактум без новости, мнения зарубежных инвестдомов,
+    // зарубежные макро-индексы (PMI/ISM/CPI и т.п.) и отчётность зарубежных компаний
+    const NOT_IMPORTANT_DAILY_RECAP = /итоги дня|событи[яй] дня|календарь на (сегодня|завтра)|^доброе утро|^добрый вечер|^мт в max|^mt в max/;
+    const NOT_IMPORTANT_FX_FACT = /\busd\/?rub\s*=|\beur\/?usd\s*=|\busdcny\s*=|\busdtrub\s*=/;
+    const NOT_IMPORTANT_PRICE_MOVE = /^[^\wа-яё]{0,6}#[\wа-яё]+\s*=\s*[+\-]?\d+([.,]\d+)?%/i;
+    const FOREIGN_BANKS = /goldman sachs|jpmorgan|jp morgan|morgan stanley|bank of america|citigroup|deutsche bank|barclays|\bubs\b|credit suisse|wells fargo|societe generale|socgen|hsbc|bnp paribas|nomura/;
+    const FOREIGN_BANK_OPINION = /прогнозир|рекомендац|повысил|понизил|целев\w+ цен|рейтинг|считает|ожидает/;
+    const FOREIGN_MACRO = /\bpmi\b|\bism\b|nonfarm|non-farm|нонфарм|chicago pmi|dallas fed|core cpi|индекс потребительского доверия|\bifo\b|индекс делового климата|индекс цен производителей|manufacturing\/services\/composite/;
+    const FOREIGN_COMPANIES = /apple|tesla|amazon|google|alphabet|microsoft|meta platforms|\bmeta\b|nvidia|netflix|intel\b|boeing|nike\b|starbucks/;
+
+    function classifyImportance(rawText) {
+        const t = rawText.toLowerCase();
+
+        if (NOT_IMPORTANT_DAILY_RECAP.test(t)) return "Не важно";
+
+        if ((/#fx\b/.test(t) || NOT_IMPORTANT_FX_FACT.test(t)) &&
+            !/санкц|цб рф|ключевая ставк|минфин/.test(t)) return "Не важно";
+
+        if (NOT_IMPORTANT_PRICE_MOVE.test(t) && t.length < 160 &&
+            !/санкц|путин|песков|мсфо|рсбу|ключевая ставк|нато|украин/.test(t)) return "Не важно";
+
+        if (FOREIGN_BANKS.test(t) && FOREIGN_BANK_OPINION.test(t)) return "Не важно";
+
+        if (FOREIGN_MACRO.test(t)) return "Не важно";
+
+        if (FOREIGN_COMPANIES.test(t) && /отчет|earnings|квартальн\w+ результат/.test(t) && !/мсфо|рсбу/.test(t)) return "Не важно";
+
+        for (const re of IMPORTANT_PATTERNS) if (re.test(t)) return "Важно";
+
+        return "Возможно";
+    }
+
     function fmtTiming(dateStr, timeStr, ts) {
         let h, mm, ss;
         if (ts) {
@@ -196,7 +244,8 @@
         // ts (unix-секунды, ~1.7e9) и порядковый номер живут в разных диапазонах,
         // чтобы сообщения без timestamp не перемешивались с сообщениями, у которых он есть
         const timing = fmtTiming(date, time, ts);
-        if (!data.has(key)) data.set(key, { sort: ts || (1e12 + data.size), line: `${text}\t${date}\t${time}\t${CHANNEL}\t${timing}` });
+        const importance = classifyImportance(text);
+        if (!data.has(key)) data.set(key, { sort: ts || (1e12 + data.size), line: `${importance}\t${text}\t${date}\t${time}\t${CHANNEL}\t${timing}` });
         return true;
     }
 
@@ -282,7 +331,7 @@
     }
 
     const rows = Array.from(data.values()).sort((a, b) => a.sort - b.sort).map(v => v.line);
-    const result = "Текст сообщения\tДата\tВремя\tКанал\tТайминг\n" + rows.join("\n");
+    const result = "Надо брать\tТекст сообщения\tДата\tВремя\tКанал\tТайминг\n" + rows.join("\n");
     console.log(result);
 
     const secs = ((performance.now() - started) / 1000).toFixed(1);
