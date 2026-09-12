@@ -62,6 +62,18 @@
     // Хэштеги в тексте расставляет автор исходного поста в канале, а не тот, кто собирает
     // выгрузку — они бывают неполными или непоследовательными, поэтому это только
     // вспомогательный (слабый) сигнал, а не единственное основание для классификации.
+    //
+    // ВАЖНО про \b и кириллицу: в JS \w и \b понимают только ASCII-буквы, поэтому
+    // конструкции вида /\bнато\b/ или /мета\b/ с кириллицей молча НЕ срабатывают — нет
+    // символа "слова" по обе стороны границы. wb() ниже строит границу вручную через
+    // lookaround по явному классу символов (латиница + кириллица + цифры).
+    const WORD_CHAR = "a-zа-яё0-9";
+    function wb(word) {
+        return `(?<![${WORD_CHAR}])(?:${word})(?![${WORD_CHAR}])`;
+    }
+    function wbRe(words, flags = "i") {
+        return new RegExp(words.map(wb).join("|"), flags);
+    }
 
     // тикеры компаний, торгующихся на Мосбирже (в латинской транслитерации, как их пишут
     // в хэштегах/кэштегах) — используются, чтобы отличать "свои" тикеры от иностранных
@@ -74,15 +86,16 @@
         "sofl", "astr", "deli", "wush", "moex", "head", "vtbr", "alrs", "mtss", "mgnt", "phor",
         "akrn", "kzos", "nkhp", "russ", "abio", "genk", "belu", "etln", "smlt", "pols", "lent", "hnfg",
         "reno", "rnft", "kmez", "kche", "brzl", "ufos", "yakg", "kube", "elfv", "ozpn", "novabev",
+        "afks", "okey", "zaym",
     ]);
 
-    // аббревиатуры и общие термины, которые внешне похожи на тикер (латиница, 2-5 букв),
+    // аббревиатуры и общие термины, которые внешне похожи на тикер (латиница, 2-6 букв),
     // но тикером не являются — чтобы не принять их за иностранную компанию
     const NON_TICKER_ACRONYMS = new Set([
         "ipo", "spo", "pmi", "ism", "cpi", "gdp", "gdpnow", "eth", "btc", "ath", "atl", "ytd", "esg",
         "fx", "etf", "cbdc", "dkp", "vve", "rts", "ofz", "nato", "api", "ai", "it", "eu", "us", "usa",
         "uk", "moex", "imoex", "cot", "vix", "fed", "ecb", "opec", "reit", "ipos", "kpi", "gaap", "ifrs",
-        "rsbu", "capex", "ebitda", "ebit", "p/e", "roe", "irr", "npv",
+        "rsbu", "capex", "ebitda", "ebit", "roe", "irr", "npv", "nft", "defi", "dao", "one",
     ]);
 
     function extractLatinTickers(t) {
@@ -93,86 +106,178 @@
         return out;
     }
 
-    // крупные компании, торгующиеся на биржах США/Европы — по названию (англ. и рус.
+    // крупные компании, торгующиеся на биржах США/Европы/Азии — по названию (англ. и рус.
     // транслитерация), не только по тикеру: многие новости (например, про IPO частных
-    // компаний вроде Anthropic/OpenAI/SpaceX) тикера вообще не имеют
+    // компаний вроде Anthropic/OpenAI/SpaceX или китайских техкомпаний) тикера не имеют
     const FOREIGN_COMPANIES = new RegExp([
         "apple", "эпл", "tesla", "тесла", "amazon", "амазон", "google", "alphabet", "гугл",
-        "microsoft", "майкрософт", "meta platforms", "\\bmeta\\b", "мета\\b", "nvidia", "нвидиа",
-        "netflix", "нетфликс", "intel\\b", "интел\\b", "boeing", "боинг", "nike\\b", "найк",
+        "microsoft", "майкрософт", "meta platforms", wb("meta"), wb("мета"), "nvidia", "нвидиа",
+        "netflix", "нетфликс", wb("intel"), wb("интел"), "boeing", "боинг", wb("nike"), wb("найк"),
         "starbucks", "старбакс", "jpmorgan", "jp morgan", "джей пи морган", "goldman sachs", "голдман сакс",
-        "morgan stanley", "морган стэнли", "bank of america", "бэнк оф америка", "citigroup", "ситигруп",
+        "morgan stanley", "морган стэнли", "bank of america", wb("bofa"), "бэнк оф америка", "citigroup", "ситигруп",
         "wells fargo", "walmart", "уолмарт", "exxon", "экссон", "chevron", "шеврон", "coca-cola", "кока-кола",
-        "pepsico", "пепсико", "disney", "дисней", "\\bvisa\\b", "виза\\b", "mastercard", "мастеркард",
-        "paypal", "пейпал", "\\boracle\\b", "оракл", "salesforce", "сейлсфорс", "adobe", "адоб", "\\bamd\\b",
-        "qualcomm", "куалкомм", "\\bibm\\b", "\\bford\\b", "форд\\b", "general motors", "дженерал моторс",
-        "at&t", "verizon", "pfizer", "пфайзер", "\\bmerck\\b", "johnson & johnson", "джонсон.{0,3}джонсон",
-        "unitedhealth", "home depot", "хоум депо", "\\bcostco\\b", "костко", "mcdonald", "макдоналдс",
-        "airbnb", "эйрбнб", "\\buber\\b", "убер\\b", "\\blyft\\b", "\\bsnap\\b", "снэп\\b", "palantir", "палантир",
-        "coinbase", "койнбейс", "rivian", "ривиан", "\\blucid\\b", "люсид", "alibaba", "алибаба",
+        "pepsico", "пепсико", "disney", "дисней", wb("visa"), wb("виза"), "mastercard", "мастеркард",
+        "paypal", "пейпал", wb("oracle"), "оракл", "salesforce", "сейлсфорс", "adobe", "адоб", wb("amd"),
+        "qualcomm", "куалкомм", wb("ibm"), wb("ford"), wb("форд"), "general motors", "дженерал моторс",
+        "at&t", "verizon", "pfizer", "пфайзер", wb("merck"), "johnson & johnson", "джонсон.{0,3}джонсон",
+        "unitedhealth", "home depot", "хоум депо", wb("costco"), "костко", "mcdonald", "макдоналдс",
+        "airbnb", "эйрбнб", wb("uber"), wb("убер"), wb("lyft"), wb("snap"), wb("снэп"), "palantir", "палантир",
+        "coinbase", "койнбейс", "rivian", "ривиан", wb("lucid"), "люсид", "alibaba", "алибаба",
         "anthropic", "антропик", "openai", "опенай", "spacex", "спейсэкс", "berkshire hathaway",
-        "беркшир хэтэуэй", "siemens", "сименс", "\\bsap\\b", "volkswagen", "фольксваген", "\\bbmw\\b",
-        "mercedes", "мерседес", "shell\\b", "шелл\\b", "\\bbp\\b(?!\\w)", "total energies", "тоталэнерджиз",
-        "louis vuitton", "\\blvmh\\b", "nestle", "нестле", "novo nordisk", "asml\\b", "toyota", "тойота",
-        "samsung", "самсунг", "\\btsmc\\b", "tencent", "тенсент", "byd\\b(?!\\w)",
+        "беркшир хэтэуэй", "siemens", "сименс", wb("sap"), "volkswagen", "фольксваген", wb("bmw"),
+        "mercedes", "мерседес", wb("shell"), wb("шелл"), wb("bp"), "total energies", "тоталэнерджиз",
+        "louis vuitton", wb("lvmh"), "nestle", "нестле", "novo nordisk", wb("asml"), "toyota", "тойота",
+        "samsung", "самсунг", wb("tsmc"), "tencent", "тенсент", wb("byd"),
+        // Китай/Азия — производители и техкомпании, часто мелькающие в новостях без тикера
+        "unitree", "юнитри", "robotera", "робо[тэ]эра", "xiaomi", "сяоми", "huawei", "хуавей",
+        "baidu", "байду", "byte[- ]?dance", "байтданс", "tiktok", "тикток", "geely", "джили",
+        "foxconn", "фоксконн", wb("smic"), "raytheon", "рейтеон", "lockheed", "локхид", "northrop", "нортроп",
+        "general dynamics", "roblox", "роблокс", "reddit", "реддит", "cerebras",
     ].join("|"), "i");
 
-    // "Важно": отчётность МСФО/РСБУ российских публичных компаний, ключевая ставка ЦБ РФ,
-    // санкции/НАТО/конфликт на Украине, IPO/SPO/ОФЗ российских эмитентов, первые лица (геополитика)
+    // "Важно": отчётность МСФО/РСБУ российских публичных компаний, ключевая ставка/решения
+    // ЦБ РФ, санкции/НАТО/конфликт на Украине, размещение ОФЗ, мобилизация, атаки БПЛА на
+    // инфраструктуру, бюджет РФ, визиты первых лиц, первые лица (геополитика); IPO/SPO
+    // обрабатываются отдельно ниже — важны только для российских эмитентов
+    const OFZ_PLACEMENT = new RegExp(`${wb("офз")}.{0,30}(размещ|аукцион|минфин)|(размещ|аукцион|минфин).{0,30}${wb("офз")}`, "i");
+    // атака дронов/БПЛА на инфраструктуру — военная составляющая конфликта, независимо
+    // от того, упомянуто ли явно слово "ВСУ"/"Украина" в конкретном сообщении
+    const DRONE_ATTACK = /(?=.*(атак|удар\S*|пожар))(?=.*(дрон|бпла|беспилотник))/i;
+    // дефицит/устойчивость федерального бюджета РФ — макро-значимая новость
+    const RU_BUDGET = new RegExp(`бюджет.{0,30}(росси|${wb("рф")})|(росси|${wb("рф")}).{0,30}бюджет`, "i");
+    // визит главы государства/МИД — не любое упоминание "визита", а конкретно дипломатия
+    // на уровне первых лиц
+    const HIGH_LEVEL_VISIT = /(визит|встреч\S*).{0,40}(глав[а-я]* (мид|государства)|президент\S*|премьер\S*)|(глав[а-я]* (мид|государства)|президент\S*|премьер\S*).{0,40}(визит|встреч\S*)/i;
     const IMPORTANT_PATTERNS = [
         /мсфо/, /рсбу/,
-        /ключевая ставка/, /ставк\w+ цб/, /цб рф.{0,20}ставк/, /банк россии.{0,20}ставк/,
-        /санкци/, /\bнато\b/,
-        /украин/, /\bсво\b/, /спецоперац/, /зеленск/, /донбасс/, /\bвсу\b/,
-        /\bофз\b/,
+        /ключевая ставка/, /ставк\S* цб/, /цб рф.{0,20}ставк/, /банк россии.{0,20}ставк/, /цб рф/,
+        /санкци/,
+        wbRe(["нато", "сво", "всу"]),
+        OFZ_PLACEMENT,
+        /украин/, /спецоперац/, /зеленск/, /донбасс/, /мобилизац/,
         /путин/, /песков/, /фон дер ляйен/, /урсула/,
+        DRONE_ATTACK, RU_BUDGET, HIGH_LEVEL_VISIT,
     ];
-    // IPO/SPO — важно только если это не размещение иностранной (не российской) компании
     const IPO_SPO_PATTERN = /\bipo\b|\bspo\b/;
-    const RU_SIGNAL = /росси|рубл|мосбирж|\bmoex\b|цб рф|минфин рф/;
-    const FOREIGN_COUNTRY_ONLY_TAG = /#(сша|us|usa|европа|китай|германия|франция|великобритания|япония)\b/;
 
-    // "Не важно": не биржевая информация (итоги/события дня), факт курса валют без контекста,
-    // движение акции/индекса пост-фактум без новости, мнения зарубежных инвестдомов,
-    // зарубежные макро-индексы (PMI/ISM/CPI и т.п.) и отчётность зарубежных компаний
-    const NOT_IMPORTANT_DAILY_RECAP = /итоги дня|событи[яй] дня|календарь на (сегодня|завтра)|^доброе утро|^добрый вечер|^мт в max|^mt в max/;
-    const NOT_IMPORTANT_FX_FACT = /\busd\/?rub\s*=|\beur\/?usd\s*=|\busdcny\s*=|\busdtrub\s*=/;
-    const NOT_IMPORTANT_PRICE_MOVE = /^[^\wа-яё]{0,6}#[\wа-яё]+\s*=\s*[+\-]?\d+([.,]\d+)?%/i;
-    const FOREIGN_BANKS = /goldman sachs|jpmorgan|jp morgan|morgan stanley|bank of america|citigroup|deutsche bank|barclays|\bubs\b|credit suisse|wells fargo|societe generale|socgen|hsbc|bnp paribas|nomura/;
-    const FOREIGN_BANK_OPINION = /прогнозир|рекомендац|повысил|понизил|целев\w+ цен|рейтинг|считает|ожидает/;
-    const FOREIGN_MACRO = /\bpmi\b|\bism\b|nonfarm|non-farm|нонфарм|chicago pmi|dallas fed|core cpi|индекс потребительского доверия|\bifo\b|индекс делового климата|индекс цен производителей|manufacturing\/services\/composite/;
+    // фактическая отчётность/дивиденды/значимое корпоративное событие российской компании —
+    // не только явные слова "МСФО"/"РСБУ", но и конкретные цифры выручки/прибыли с явным
+    // указанием на отчётность, реальные (не прогнозные, без префикса "МНЕНИЕ:") дивиденды,
+    // а также "планка" именно в значении лимита цены на торгах (вниз/вверх) — любая такая
+    // планка важна, а не просто уровень/ориентир (например, "планка дивидендных выплат")
+    function isRuCorporateEvent(t) {
+        if (/^мнение:/.test(t)) return false;
+        if (/дивиденд/.test(t) && new RegExp(`${wb("сд")}|совет директоров|${wb("воса")}|руб\\S*\\/акц|\\d[.,]?\\d*\\s*руб\\b`).test(t)) return true;
+        if (/выручк|чистая прибыл|прибыл\S*|убыт\S*|\bebitda\b|\boibda\b/.test(t) &&
+            /руб|млрд|млн|%|\$/.test(t) && /отчетност|отчёт\S*|мсфо|рсбу|консенсус/.test(t)) return true;
+        if (/планк\S*.{0,15}(вниз|вверх)|(вниз|вверх).{0,15}планк\S*/.test(t)) return true;
+        return false;
+    }
 
-    // компания в тексте иностранная, если совпало имя из FOREIGN_COMPANIES ИЛИ среди
-    // тикеров-хэштегов есть латинский тикер, которого нет ни в MOEX_TICKERS, ни в списке
-    // общих аббревиатур NON_TICKER_ACRONYMS (эвристика на случай неизвестной компании)
+    // криптовалюты пользователю не интересны вообще, независимо от того, кто их упоминает
+    const CRYPTO_PATTERN = new RegExp([
+        wb("btc"), wb("eth"), wb("nft"), wb("defi"), wb("mstr"),
+        "крипто", "биткоин", "эфириум", "блокчейн", "стейблкоин", "альткоин", "токеномик",
+        "binance", "coinbase", "tether", "bitmine", "ethereum", "bitcoin", "stablecoin", "harmony",
+    ].join("|"), "i");
+
+    // страна/компания в тексте считается иностранной, если совпало имя из FOREIGN_COMPANIES,
+    // упомянута зарубежная страна (без российского контекста) или среди тикеров-хэштегов есть
+    // латинский тикер, которого нет ни в MOEX_TICKERS, ни в NON_TICKER_ACRONYMS (эвристика
+    // на случай компании, не попавшей явно в список)
+    const RU_SIGNAL = new RegExp(`росси|рубл|мосбирж|\\bmoex\\b|цб рф|минфин рф|${wb("рф")}`, "i");
+    // Иран/Ирак/Израиль намеренно не включены: конфликт вокруг них слишком тесно
+    // переплетён с обсуждением России (санкции, нефть, НАТО), поэтому такие новости
+    // по умолчанию остаются в "Возможно", а не автоматически уходят в "Не важно"
+    const FOREIGN_COUNTRIES_RE = wbRe([
+        "сша", "us", "usa", "европа", "китай", "кнр", "германия", "франция", "великобритания", "англия",
+        "япония", "канада", "индия", "бразилия", "тайвань", "корея", "кндр", "казахстан", "таджикистан",
+        "узбекистан", "кыргызстан", "туркменистан", "австралия", "оаэ", "турция", "индонезия", "вьетнам",
+        "швейцария", "италия", "испания", "польша",
+    ]);
     function isForeignCompany(t) {
         if (FOREIGN_COMPANIES.test(t)) return true;
         return extractLatinTickers(t).some(tk => !MOEX_TICKERS.has(tk) && !NON_TICKER_ACRONYMS.has(tk));
     }
+    // Иран/Ормузский пролив — как и Ирак/Израиль выше, тесно переплетены с геополитикой
+    // вокруг России (нефть, санкции, НАТО), поэтому даже при упоминании США/др. стран рядом
+    // такие новости не должны автоматически уходить в "Не важно" по признаку "страна"
+    const CONFLICT_ZONE_EXEMPT = /иран|ормуз/i;
+    function isForeignCompanyOrCountry(t) {
+        if (isForeignCompany(t)) return true;
+        if (RU_SIGNAL.test(t) || CONFLICT_ZONE_EXEMPT.test(t)) return false;
+        return FOREIGN_COUNTRIES_RE.test(t);
+    }
+
+    // фактические (не "впереди"/анонс) данные по инфляции/дефляции в РФ — реальная цифра,
+    // а не просто напоминание о том, что она выйдет позже
+    const RU_INFLATION_DATA = new RegExp(`(инфляц\\S*|дефляц\\S*).{0,40}${wb("рф")}|(инфляц\\S*|дефляц\\S*).{0,40}росси|росси.{0,40}(инфляц\\S*|дефляц\\S*)|${wb("рф")}.{0,40}(инфляц\\S*|дефляц\\S*)`, "i");
+
+    // события, не имеющие отношения к фондовому рынку вообще (концерты, реклама и т.п.) —
+    // такие сообщения могут случайно содержать слова "путин"/"россия" по касательной
+    const OFF_TOPIC_NOISE = /канье уэст|kanye west/i;
+
+    function hasImportantSignal(t) {
+        return IMPORTANT_PATTERNS.some(re => re.test(t)) || RU_INFLATION_DATA.test(t) ||
+            (isRuCorporateEvent(t) && !isForeignCompanyOrCountry(t));
+    }
+
+    // "Не важно": не биржевая информация (итоги/события дня, анонсы будущих данных), факт
+    // курса валют без контекста, движение акции/индекса/сырья пост-фактум без новости, мнения
+    // зарубежных инвестдомов и рейтинговых агентств, зарубежные макро-индексы (PMI/ISM/CPI),
+    // криптовалюты, ИИ-хайп без привязки к российскому эмитенту, любая иностранная компания/
+    // страна и сообщения без содержательного текста (только эмодзи/хэштеги)
+    const NOT_IMPORTANT_DAILY_RECAP = new RegExp(
+        ["итоги дня", "событи[яй] дня", "календарь на (сегодня|завтра)", "^доброе утро", "^добрый вечер",
+            "^мт в max", "^mt в max", wb("впереди")].join("|"),
+        "i"
+    );
+    const NOT_IMPORTANT_FX_FACT = /\busd\/?rub\s*=|\beur\/?usd\s*=|\busdcny\s*=|\busdtrub\s*=/;
+    const NOT_IMPORTANT_PRICE_MOVE = /^[^\wа-яё]{0,6}#[\wа-яё]+\s*=\s*[+\-]?\d+([.,]\d+)?%/i;
+    const COMMODITIES = ["медь", "золото", "серебро", "нефть", "газ", "пшениц\\S*", "кукуруз\\S*", "зерно", "сахар", "хлопок", "уголь", "алмаз\\S*", "кофе", "мясо"];
+    const NOT_IMPORTANT_MARKET_CHATTER = new RegExp(
+        [wb("imoex"), wb("rts"), wb("rgbi"), "индекс мосбиржи", "индекс офз", ...COMMODITIES.map(wb)].join("|"),
+        "i"
+    );
+    const NOT_IMPORTANT_AI_HYPE = new RegExp(wb("ии"), "i");
+    const FOREIGN_INSTITUTIONS = /goldman sachs|jpmorgan|jp morgan|morgan stanley|\bmorgan\b|bank of america|\bbofa\b|citigroup|deutsche bank|barclays|\bubs\b|credit suisse|wells fargo|societe generale|socgen|hsbc|bnp paribas|nomura|wedbush|evercore|moody'?s|fitch\b|\bs&p\b/i;
+    const FOREIGN_MACRO = /\bpmi\b|\bism\b|nonfarm|non-farm|нонфарм|chicago pmi|dallas fed|core cpi|индекс потребительского доверия|\bifo\b|индекс делового климата|индекс цен производителей|manufacturing\/services\/composite/;
 
     function classifyImportance(rawText) {
         const t = rawText.toLowerCase();
 
+        if (OFF_TOPIC_NOISE.test(t)) return "Не важно";
+
+        // сообщение без содержательного текста — только эмодзи/хэштеги/пунктуация
+        const stripped = t.replace(/#[a-zа-яё0-9_]+/gi, "").replace(/[^a-zа-яё0-9]/gi, "").trim();
+        if (stripped.length < 3) return "Не важно";
+
         if (NOT_IMPORTANT_DAILY_RECAP.test(t)) return "Не важно";
 
-        if ((/#fx\b/.test(t) || NOT_IMPORTANT_FX_FACT.test(t)) &&
-            !/санкц|цб рф|ключевая ставк|минфин/.test(t)) return "Не важно";
+        if ((/#fx\b/.test(t) || NOT_IMPORTANT_FX_FACT.test(t)) && !hasImportantSignal(t)) return "Не важно";
 
-        if (NOT_IMPORTANT_PRICE_MOVE.test(t) && t.length < 160 &&
-            !/санкц|путин|песков|мсфо|рсбу|ключевая ставк|нато|украин/.test(t)) return "Не важно";
+        if (NOT_IMPORTANT_PRICE_MOVE.test(t) && t.length < 160 && !hasImportantSignal(t)) return "Не важно";
 
-        if (FOREIGN_BANKS.test(t) && FOREIGN_BANK_OPINION.test(t)) return "Не важно";
+        if (NOT_IMPORTANT_MARKET_CHATTER.test(t) && t.length < 200 && !hasImportantSignal(t)) return "Не важно";
 
-        if (FOREIGN_MACRO.test(t)) return "Не важно";
-
-        if (isForeignCompany(t) && /отчет|earnings|квартальн\w+ результат/.test(t) && !/мсфо|рсбу/.test(t)) return "Не важно";
+        if (RU_INFLATION_DATA.test(t)) return "Важно";
 
         for (const re of IMPORTANT_PATTERNS) if (re.test(t)) return "Важно";
 
-        if (IPO_SPO_PATTERN.test(t)) {
-            const foreign = isForeignCompany(t) || (FOREIGN_COUNTRY_ONLY_TAG.test(t) && !RU_SIGNAL.test(t));
-            return foreign ? "Не важно" : "Важно";
-        }
+        // IPO/SPO — важно только для российских эмитентов, иностранные размещения не интересны
+        if (IPO_SPO_PATTERN.test(t)) return isForeignCompanyOrCountry(t) ? "Не важно" : "Важно";
+
+        if (CRYPTO_PATTERN.test(t)) return "Не важно";
+
+        // конкретная отчётность/дивиденды/лимитная планка российской компании — важно,
+        // даже если явных слов "МСФО"/"РСБУ" в тексте нет
+        if (isRuCorporateEvent(t) && !isForeignCompanyOrCountry(t)) return "Важно";
+
+        if (FOREIGN_INSTITUTIONS.test(t)) return "Не важно";
+        if (FOREIGN_MACRO.test(t)) return "Не важно";
+        if (isForeignCompanyOrCountry(t)) return "Не важно";
+
+        if (NOT_IMPORTANT_AI_HYPE.test(t) && !RU_SIGNAL.test(t)) return "Не важно";
 
         return "Возможно";
     }
