@@ -16,11 +16,11 @@
         return;
     }
 
-    const SCROLL_RATIO = 0.85;
-    const TICK_MS      = 40;
-    const IDLE_TICKS   = 3;
-    const MIN_WAIT_MS  = 60;
-    const MAX_WAIT_MS  = 1800;
+    const SCROLL_RATIO = 1.4;
+    const TICK_MS      = 30;
+    const IDLE_TICKS   = 2;
+    const MIN_WAIT_MS  = 30;
+    const MAX_WAIT_MS  = 900;
     const MAX_STEPS    = 5000;
     const DIRECTION    = 1;
 
