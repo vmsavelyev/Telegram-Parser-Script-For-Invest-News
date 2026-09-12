@@ -1,19 +1,4 @@
 (async function () {
-    const RAW = prompt(
-        "Какую дату поставить всем сообщениям? Формат ДД.ММ.ГГГГ\n" +
-        "Или введите: авто — чтобы брать реальную дату каждого поста.",
-        "19.08.2026"
-    );
-    if (!RAW) return;
-
-    const AUTO_DATE = /^авто$/i.test(RAW.trim());
-    const userDate  = RAW.trim();
-
-    if (!AUTO_DATE && !/^\d{2}\.\d{2}\.\d{4}$/.test(userDate)) {
-        alert("Неверный формат даты. Введите в формате ДД.ММ.ГГГГ или слово «авто».");
-        return;
-    }
-
     const SCROLL_RATIO = 2.5;
     const TICK_MS      = 20;
     const IDLE_TICKS   = 1;
@@ -863,11 +848,11 @@
 
     function extractStamp(b) {
         const ts = Number(b.dataset.timestamp || b.getAttribute("data-timestamp"));
-        if (ts) { const d = new Date(ts * 1000); return { time: fmtTime(d), date: AUTO_DATE ? fmtDate(d) : userDate, ts }; }
+        if (ts) { const d = new Date(ts * 1000); return { time: fmtTime(d), date: fmtDate(d), ts }; }
         const t = b.querySelector(".time-inner") || b.querySelector(".time");
         const raw = cleanText(t ? (t.innerText || "") : "");
         const m = raw.match(/\b([01]?\d|2[0-3]):[0-5]\d\b/);
-        const date = AUTO_DATE ? (findNearestDateSeparator(b) || userDate) : userDate;
+        const date = findNearestDateSeparator(b) || fmtDate(new Date());
         return { time: m ? m[0] : "", date, ts: 0 };
     }
 
