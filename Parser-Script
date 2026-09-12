@@ -1,0 +1,220 @@
+(async function () {
+    const RAW = prompt(
+        "Какую дату поставить всем сообщениям? Формат ДД.ММ.ГГГГ\n" +
+        "Или введите: авто — чтобы брать реальную дату каждого поста.",
+        "19.08.2026"
+    );
+    if (!RAW) return;
+
+    const AUTO_DATE = /^авто$/i.test(RAW.trim());
+    const userDate  = RAW.trim();
+
+    const SCROLL_RATIO = 0.85;
+    const TICK_MS      = 40;
+    const IDLE_TICKS   = 3;
+    const MIN_WAIT_MS  = 60;
+    const MAX_WAIT_MS  = 1800;
+    const MAX_STEPS    = 5000;
+    const DIRECTION    = 1;
+
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+    const pad = n => String(n).padStart(2, "0");
+    const fmtTime = d => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    const fmtDate = d => `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()}`;
+    const cleanText = t => t.replace(/\r?\n|\r/g, " ").replace(/\s+/g, " ").trim();
+
+    const isShown = el => {
+        if (!el || el.offsetParent === null) return false;
+        const r = el.getBoundingClientRect();
+        return r.width > 10 && r.height > 10;
+    };
+
+    // ---------- поиск контейнера ----------
+    function scrollableAncestors(el) {
+        const out = [];
+        let cur = el;
+        while (cur && cur !== document.body) {
+            if (cur.scrollHeight > cur.clientHeight + 20) out.push(cur);
+            cur = cur.parentElement;
+        }
+        return out;
+    }
+
+    function candidates() {
+        const set = new Set();
+
+        // только видимые баблы — отсекает скрытые чаты
+        const bubbles = [...document.querySelectorAll(".bubble[data-mid]")].filter(isShown);
+        for (const b of bubbles.slice(0, 40)) scrollableAncestors(b).forEach(a => set.add(a));
+
+        document.querySelectorAll(".bubbles .scrollable-y, .bubbles .scrollable, .bubbles")
+            .forEach(e => { if (isShown(e) && e.scrollHeight > e.clientHeight + 20) set.add(e); });
+
+        return [...set]
+            .map(el => ({ el, n: [...el.querySelectorAll(".bubble[data-mid]")].filter(isShown).length }))
+            .filter(c => c.n > 0)
+            .sort((a, b) => b.n - a.n)
+            .map(c => c.el);
+    }
+
+    function wheelScroll(el, dy) {
+        el.dispatchEvent(new WheelEvent("wheel", { deltaY: dy, bubbles: true, cancelable: true }));
+    }
+
+    async function probe(el) {
+        const t = el.scrollTop;
+        el.scrollTop = t + 150;
+        await sleep(70);
+        let ok = Math.abs(el.scrollTop - t) > 1;
+        if (!ok) { el.scrollTop = Math.max(0, t - 150); await sleep(70); ok = Math.abs(el.scrollTop - t) > 1; }
+        el.scrollTop = t;
+        return ok;
+    }
+
+    // ждём, пока чат вообще отрисуется (до 8 с)
+    let list = [];
+    for (let i = 0; i < 40 && !list.length; i++) { list = candidates(); if (!list.length) await sleep(200); }
+    if (!list.length) { alert("Не найдено ни одного видимого сообщения.\nОткройте канал и дождитесь загрузки."); return; }
+
+    let scroller = null;
+    for (const c of list) { if (await probe(c)) { scroller = c; break; } }
+    if (!scroller) scroller = list[0];   // лента короче экрана — соберём что есть
+    console.log("[TG-K] Контейнер:", scroller, "| кандидатов:", list.length);
+
+    // ---------- парсинг ----------
+    const data = new Map();
+    const pending = new Set();
+    let mutated = false;
+
+    const isRealMessage = b =>
+        !b.classList.contains("service") && !b.classList.contains("is-date") &&
+        !b.classList.contains("is-sponsored") && !b.classList.contains("sponsored");
+
+    function extractMessageText(b) {
+        const el = b.querySelector(".message");
+        if (!el) return "";
+        const c = el.cloneNode(true);
+        c.querySelectorAll(".time, .time-inner, reactions-element, .reactions, .reply-markup, " +
+                           ".webpage, .web, .message-views, .post-views, button").forEach(n => n.remove());
+        return cleanText(c.innerText || c.textContent || "");
+    }
+
+    function extractStamp(b) {
+        const ts = Number(b.dataset.timestamp || b.getAttribute("data-timestamp"));
+        if (ts) { const d = new Date(ts * 1000); return { time: fmtTime(d), date: AUTO_DATE ? fmtDate(d) : userDate, ts }; }
+        const t = b.querySelector(".time-inner") || b.querySelector(".time");
+        const raw = cleanText(t ? (t.innerText || "") : "");
+        const m = raw.match(/\b([01]?\d|2[0-3]):[0-5]\d\b/);
+        return { time: m ? m[0] : "", date: userDate, ts: 0 };
+    }
+
+    function tryParse(b) {
+        if (!isRealMessage(b)) return true;
+        const id = b.getAttribute("data-mid") || b.getAttribute("data-message-id") || "";
+        if (id && data.has(id)) return true;
+        const text = extractMessageText(b);
+        const { time, date, ts } = extractStamp(b);
+        if (!text || !time) { b.__t = (b.__t || 0) + 1; return b.__t > 25; }
+        const key = id || `${time}||${text.slice(0, 200)}`;
+        if (!data.has(key)) data.set(key, { sort: ts || Number(id) || data.size, line: `${text}\t${date}\t${time}` });
+        return true;
+    }
+
+    function flush() {
+        for (const b of pending) if (tryParse(b)) pending.delete(b);
+        // ВАЖНО: ищем по всему документу, а не внутри scroller
+        document.querySelectorAll(".bubble[data-mid], .bubble[data-message-id]").forEach(tryParse);
+        const c = document.getElementById("tg-export-count");
+        if (c) c.innerText = String(data.size);
+    }
+
+    const observer = new MutationObserver(muts => {
+        mutated = true;
+        for (const m of muts) for (const n of m.addedNodes) {
+            if (n.nodeType !== 1) continue;
+            if (n.classList?.contains("bubble")) pending.add(n);
+            n.querySelectorAll?.(".bubble[data-mid]").forEach(x => pending.add(x));
+        }
+    });
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+
+    async function waitRender() {
+        const t0 = performance.now();
+        await sleep(MIN_WAIT_MS);
+        let idle = 0;
+        while (performance.now() - t0 < MAX_WAIT_MS) {
+            flush();
+            if (mutated) { mutated = false; idle = 0; }
+            else if (++idle >= IDLE_TICKS) break;
+            await sleep(TICK_MS);
+        }
+        flush();
+    }
+
+    const panel = document.createElement("div");
+    panel.style = `position:fixed;top:16px;right:16px;z-index:999999;background:#202020;color:#fff;
+                   padding:12px 16px;border-radius:10px;font:14px/1.4 Arial,sans-serif;
+                   box-shadow:0 4px 18px rgba(0,0,0,.4);`;
+    panel.innerHTML = `<b>TG Export (Web K)</b><br>
+        Собрано: <span id="tg-export-count">0</span><br>
+        Шаг: <span id="tg-export-step">0</span> <span id="tg-export-eta"></span><br>
+        <button id="tg-export-stop" style="margin-top:8px;padding:6px 10px;background:#d33;color:#fff;
+                border:0;border-radius:6px;cursor:pointer;font-weight:bold;">Остановить и выгрузить</button>`;
+    document.body.appendChild(panel);
+    let stopped = false;
+    document.getElementById("tg-export-stop").onclick = () => { stopped = true; };
+
+    flush();
+    const started = performance.now();
+    let same = 0;
+
+    for (let step = 1; step <= MAX_STEPS && !stopped; step++) {
+        document.getElementById("tg-export-step").innerText = String(step);
+
+        const before = scroller.scrollTop;
+        const delta = Math.round(scroller.clientHeight * SCROLL_RATIO) * DIRECTION;
+
+        scroller.scrollTop = before + delta;
+        if (Math.abs(scroller.scrollTop - before) < 1) {   // запасной способ
+            wheelScroll(scroller, delta);
+            await sleep(80);
+        }
+
+        await waitRender();
+
+        if (Math.abs(scroller.scrollTop - before) < 1) same++; else same = 0;
+        if (same >= 5) { console.log("[TG-K] Конец ленты или скролл заблокирован."); break; }
+
+        document.getElementById("tg-export-eta").innerText =
+            `${((performance.now() - started) / 1000).toFixed(1)} c`;
+    }
+
+    await waitRender();
+    await sleep(300);
+    flush();
+    observer.disconnect();
+    panel.remove();
+
+    if (!data.size) {
+        alert("Собрано 0 сообщений.\nВыполните в консоли диагностику:\n" +
+              "[...document.querySelectorAll('.bubbles')].map(e=>[e.className,e.querySelectorAll('.bubble[data-mid]').length,e.offsetParent!==null])");
+        return;
+    }
+
+    const rows = Array.from(data.values()).sort((a, b) => a.sort - b.sort).map(v => v.line);
+    const result = "Текст сообщения\tДата\tВремя\n" + rows.join("\n");
+    console.log(result);
+
+    const secs = ((performance.now() - started) / 1000).toFixed(1);
+    try {
+        await navigator.clipboard.writeText(result);
+        alert(`Готово за ${secs} c. Собрано: ${data.size}\nСкопировано в буфер обмена.`);
+    } catch (e) {
+        const a = document.createElement("textarea");
+        a.value = result;
+        a.style = `position:fixed;top:20px;left:20px;width:80vw;height:70vh;z-index:999999;
+                   background:#fff;color:#000;font-size:14px;padding:10px;border:3px solid red;`;
+        document.body.appendChild(a); a.focus(); a.select();
+        alert(`Готово за ${secs} c. Собрано: ${data.size}\nНажмите Ctrl+C.`);
+    }
+})();
