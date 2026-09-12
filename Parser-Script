@@ -1,5 +1,7 @@
 (async function () {
     const RAW = prompt(
+        "ВАЖНО: перед запуском долистайте канал вручную до самого начала (до первых сообщений) —\n" +
+        "скрипт скроллит вниз и соберёт только то, что идёт после текущей позиции.\n\n" +
         "Какую дату поставить всем сообщениям? Формат ДД.ММ.ГГГГ\n" +
         "Или введите: авто — чтобы брать реальную дату каждого поста.",
         "19.08.2026"
@@ -8,6 +10,11 @@
 
     const AUTO_DATE = /^авто$/i.test(RAW.trim());
     const userDate  = RAW.trim();
+
+    if (!AUTO_DATE && !/^\d{2}\.\d{2}\.\d{4}$/.test(userDate)) {
+        alert("Неверный формат даты. Введите в формате ДД.ММ.ГГГГ или слово «авто».");
+        return;
+    }
 
     const SCROLL_RATIO = 0.85;
     const TICK_MS      = 40;
@@ -21,7 +28,7 @@
     const pad = n => String(n).padStart(2, "0");
     const fmtTime = d => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
     const fmtDate = d => `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()}`;
-    const cleanText = t => t.replace(/\r?\n|\r/g, " ").replace(/\s+/g, " ").trim();
+    const cleanText = t => t.replace(/\r?\n|\r|\t/g, " ").replace(/\s+/g, " ").trim();
 
     const isShown = el => {
         if (!el || el.offsetParent === null) return false;
@@ -99,13 +106,47 @@
         return cleanText(c.innerText || c.textContent || "");
     }
 
+    const MONTHS_RU = {
+        "янв": 1, "февр": 2, "фев": 2, "март": 3, "мар": 3, "апр": 4, "ма": 5, "май": 5, "мая": 5,
+        "июн": 6, "июл": 7, "авг": 8, "сент": 9, "сен": 9, "окт": 10, "нояб": 11, "ноя": 11, "дек": 12
+    };
+
+    // ищем ближайший видимый разделитель даты (".is-date") перед сообщением b
+    function findNearestDateSeparator(b) {
+        let cur = b.previousElementSibling;
+        while (!cur) {
+            const parent = b.parentElement;
+            if (!parent) break;
+            cur = parent.previousElementSibling;
+            b = parent;
+        }
+        while (cur) {
+            if (cur.classList && cur.classList.contains("is-date")) {
+                const raw = cleanText(cur.innerText || cur.textContent || "").toLowerCase();
+                const m = raw.match(/(\d{1,2})\s+([а-яё]+)(?:\s+(\d{4}))?/i);
+                if (m) {
+                    const day = Number(m[1]);
+                    const monthKey = Object.keys(MONTHS_RU).find(k => m[2].startsWith(k));
+                    const month = monthKey ? MONTHS_RU[monthKey] : null;
+                    const year = m[3] ? Number(m[3]) : new Date().getFullYear();
+                    if (month) return `${pad(day)}.${pad(month)}.${year}`;
+                }
+                if (/сегодня|today/i.test(raw)) return fmtDate(new Date());
+                if (/вчера|yesterday/i.test(raw)) { const d = new Date(); d.setDate(d.getDate() - 1); return fmtDate(d); }
+            }
+            cur = cur.previousElementSibling;
+        }
+        return null;
+    }
+
     function extractStamp(b) {
         const ts = Number(b.dataset.timestamp || b.getAttribute("data-timestamp"));
         if (ts) { const d = new Date(ts * 1000); return { time: fmtTime(d), date: AUTO_DATE ? fmtDate(d) : userDate, ts }; }
         const t = b.querySelector(".time-inner") || b.querySelector(".time");
         const raw = cleanText(t ? (t.innerText || "") : "");
         const m = raw.match(/\b([01]?\d|2[0-3]):[0-5]\d\b/);
-        return { time: m ? m[0] : "", date: userDate, ts: 0 };
+        const date = AUTO_DATE ? (findNearestDateSeparator(b) || userDate) : userDate;
+        return { time: m ? m[0] : "", date, ts: 0 };
     }
 
     function tryParse(b) {
@@ -116,7 +157,9 @@
         const { time, date, ts } = extractStamp(b);
         if (!text || !time) { b.__t = (b.__t || 0) + 1; return b.__t > 25; }
         const key = id || `${time}||${text.slice(0, 200)}`;
-        if (!data.has(key)) data.set(key, { sort: ts || Number(id) || data.size, line: `${text}\t${date}\t${time}` });
+        // ts (unix-секунды, ~1.7e9) и порядковый номер живут в разных диапазонах,
+        // чтобы сообщения без timestamp не перемешивались с сообщениями, у которых он есть
+        if (!data.has(key)) data.set(key, { sort: ts || (1e12 + data.size), line: `${text}\t${date}\t${time}` });
         return true;
     }
 
