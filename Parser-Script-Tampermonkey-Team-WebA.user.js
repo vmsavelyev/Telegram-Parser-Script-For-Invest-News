@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Telegram Web A — экспорт новостей канала
 // @namespace    telegram-parser-script-for-invest-news
-// @version      1.8.0
+// @version      1.9.0
 // @description  Выгружает текст сообщений из открытого канала/чата в веб-версии Telegram (Web A) в таблицу с колонками «Надо брать», «Текст сообщения», «Дата», «Время», «Канал», «Тайминг», «Тема» и копирует результат в буфер обмена (TSV).
 // @author       vmsavelyev
 // @match        https://web.telegram.org/a/*
@@ -26,7 +26,7 @@
     // метка сборки — печатается в консоль при старте, чтобы было видно, какая именно
     // версия скрипта реально выполняется в браузере (Tampermonkey хранит свою копию,
     // и правки файла на диске в него сами не попадают)
-    const BUILD = "1.8.0 / scroll-snap-off";
+    const BUILD = "1.9.0 / v5-rules";
 
     async function runParser() {
     console.log("[TG-A] build:", BUILD);
@@ -275,6 +275,8 @@
         "япония", "канада", "индия", "бразилия", "тайвань", "коре[яию]|корее|кореей", "кндр", "казахстан", "таджикистан",
         "узбекистан", "кыргызстан", "туркменистан", "австралия", "оаэ", "турция", "индонезия", "вьетнам",
         "швейцария", "италия", "испания", "польша",
+        // страны/регионы, где иногда проходят крупные IPO, не имеющие отношения к России
+        "нигери\\S*", "африк\\S*", "персидск\\S* залив\\S*",
     ]);
     function isForeignCompany(t) {
         if (FOREIGN_COMPANIES.test(t)) return true;
@@ -331,15 +333,21 @@
     function isSvoNews(t) {
         return SVO_MENTION.test(t) && !SVO_TIME_REFERENCE.test(t);
     }
-    const PERSON_MENTIONS = /путин|песков|фон дер ляйен|урсула/i;
+    // Лавров/Рябков — любые их заявления важны (дипломатическая линия, переговоры с США/Европой)
+    const PERSON_MENTIONS = /путин|песков|лавров|рябков|фон дер ляйен|урсула/i;
+    // возобновление "Северного потока" напрямую влияет на Газпром и газовый рынок
+    const NORD_STREAM = /северн\S* пот/i;
+    // высказывания руководства ЦБ РФ о ставке — сигнал о будущих решениях по ставке; сам
+    // RATE_PATTERN не расширяем, иначе ловятся прогнозы Грефа/Шохина и чужие ЦБ
+    const CB_OFFICIAL_RATE = /(?=.*(тремасов|набиуллин|заботкин))(?=.*ставк)/i;
     const IMPORTANT_PATTERNS = [
         /мсфо/, /рсбу/,
         isRuRateMention, isCbRfAction,
         isRelevantSanctions,
         wbRe(["нато", "всу"]), isSvoNews,
         OFZ_PLACEMENT,
-        /украин/, /спецоперац/, /зеленск/, /донбасс/, /мобилизац/,
-        PERSON_MENTIONS,
+        /украин/, /киев/, /спецоперац/, /зеленск/, /донбасс/, /мобилизац/,
+        PERSON_MENTIONS, NORD_STREAM, CB_OFFICIAL_RATE,
         DRONE_ATTACK, RU_BUDGET, HIGH_LEVEL_VISIT,
     ];
     function matchesImportant(t) {
@@ -357,6 +365,10 @@
     function isRuCorporateEvent(t) {
         if (/^мнение:/.test(t)) return false;
         if (/отрасл/.test(t)) return false;
+        // buyback и новая дивидендная политика влияют на цену акции в будущем; требования
+        // ЦБ к дивполитикам компаний в целом — не корпоративное событие конкретного эмитента
+        if (/buy ?back|байбэк|бай-бэк/.test(t)) return true;
+        if (/дивидендн\S* политик|дивполитик/.test(t) && !/цб|банк россии/.test(t)) return true;
         if (/дивиденд/.test(t) && new RegExp(`${wb("сд")}|совет директоров|${wb("воса")}|руб\\S*\\/акц|\\d[.,]?\\d*\\s*руб\\b`).test(t)) return true;
         if (/отчетност|отчёт\S*|консенсус/.test(t) &&
             (/выручк|чистая прибыл|прибыл\S*|убыт\S*|\bebitda\b|\boibda\b/.test(t) ||
@@ -384,8 +396,9 @@
     // криптовалюты, ИИ-хайп без привязки к российскому эмитенту, любая иностранная компания/
     // страна и сообщения без содержательного текста (только эмодзи/хэштеги)
     const NOT_IMPORTANT_DAILY_RECAP = new RegExp(
-        ["итоги дня", "событи[яй] дня", "календарь на (сегодня|завтра)", "^доброе утро", "^добрый вечер",
-            "^мт в max", "^mt в max", wb("впереди")].join("|"),
+        ["итоги дня", "акции и инвестиции", "событи[яй] дня", "ожидаем следующие события", "сми оценили",
+            "календарь на (сегодня|завтра)", "^[^a-zа-яё0-9]*доброе утро", "^[^a-zа-яё0-9]*добрый вечер",
+            "^[^a-zа-яё0-9]*мт в max", "^[^a-zа-яё0-9]*mt в max", wb("впереди")].join("|"),
         "i"
     );
     const NOT_IMPORTANT_FX_FACT = /\busd\/?rub\s*=|\beur\/?usd\s*=|\busdcny\s*=|\busdtrub\s*=/;
@@ -395,6 +408,17 @@
         [wb("imoex"), wb("rts"), wb("rgbi"), "индекс мосбиржи", "индекс офз", ...COMMODITIES.map(wb)].join("|"),
         "i"
     );
+    // движение индекса пост-фактум ("📈 Индекс Мосбиржи ускорил рост после заявления ...") —
+    // важен момент самой новости, а не реакция рынка на неё; проверяется до важных сигналов,
+    // т.к. в таких постах почти всегда упоминается повод (Трамп/Песков/санкции и т.п.)
+    const INDEX_MOVE = new RegExp(
+        `(индекс мосбиржи|${wb("imoex")}|российский рынок).{0,60}(ускорил|пробил|ралли|взлет|рост|снижени|упал|вырос|[=+\\-−]\\s*\\d)|` +
+        "(ралли|антиралли).{0,60}(российский рынок|индекс мосбиржи)",
+        "i"
+    );
+    const PRICE_ARROW_START = /^[^a-zа-яё0-9]*(📈|📉|⬆️|⬇️)/u;
+    // заметка об уже опубликованных постах Трампа ("Два поста Трампа в Truth Social ...")
+    const TRUMP_POSTS_NOTE = /(пост[аов]*|твит\S*) трампа/i;
     const NOT_IMPORTANT_AI_HYPE = new RegExp(wb("ии"), "i");
     const FOREIGN_INSTITUTIONS = /goldman sachs|jpmorgan|jp morgan|morgan stanley|\bmorgan\b|bank of america|\bbofa\b|citigroup|deutsche bank|barclays|\bubs\b|credit suisse|wells fargo|societe generale|socgen|hsbc|bnp paribas|nomura|wedbush|evercore|moody'?s|fitch\b|\bs&p\b/i;
     const FOREIGN_MACRO = /\bpmi\b|\bism\b|nonfarm|non-farm|нонфарм|chicago pmi|dallas fed|core cpi|индекс потребительского доверия|\bifo\b|индекс делового климата|индекс цен производителей|manufacturing\/services\/composite/;
@@ -686,15 +710,15 @@
     // конфликт Россия-Украина: НАТО/ВСУ/СВО/санкции-повод, дроны и т.п.
     function isUkraineConflict(t) {
         return wbRe(["нато", "всу"]).test(t) || isSvoNews(t) ||
-            /украин|спецоперац|зеленск|донбасс|мобилизац/.test(t) || DRONE_ATTACK.test(t);
+            /украин|киев|спецоперац|зеленск|донбасс|мобилизац/.test(t) || DRONE_ATTACK.test(t);
     }
     // конфликт США-Иран (Ормузский пролив и т.п.)
     function isIranConflict(t) {
         return CONFLICT_ZONE_EXEMPT.test(t);
     }
-    // тема ЦБ: ставка, действия ЦБ РФ, инфляция, бюджет РФ
+    // тема ЦБ: ставка, действия ЦБ РФ, заявления руководства ЦБ о ставке, инфляция, бюджет РФ
     function isCbTopic(t) {
-        return isRuRateMention(t) || isCbRfAction(t) || RU_INFLATION_DATA.test(t) || RU_BUDGET.test(t);
+        return isRuRateMention(t) || isCbRfAction(t) || CB_OFFICIAL_RATE.test(t) || RU_INFLATION_DATA.test(t) || RU_BUDGET.test(t);
     }
     // название российской компании — по тикеру-хэштегу из MOEX_TICKERS (переводится в
     // читаемое имя через TICKER_NAMES) либо, если тикера в тексте нет, но событие явно
@@ -727,6 +751,10 @@
         if (stripped.length < 3) return "Не важно";
 
         if (NOT_IMPORTANT_DAILY_RECAP.test(t)) return "Не важно";
+
+        if (PRICE_ARROW_START.test(t) && INDEX_MOVE.test(t)) return "Не важно";
+
+        if (TRUMP_POSTS_NOTE.test(t)) return "Не важно";
 
         if ((/#fx\b/.test(t) || NOT_IMPORTANT_FX_FACT.test(t)) && !hasImportantSignal(t)) return "Не важно";
 
