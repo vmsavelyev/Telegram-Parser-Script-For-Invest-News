@@ -1,12 +1,14 @@
 // ==UserScript==
 // @name         Telegram Web K — экспорт новостей канала
 // @namespace    telegram-parser-script-for-invest-news
-// @version      1.9.0
-// @description  Выгружает текст сообщений из открытого канала/чата в веб-версии Telegram (Web K) в таблицу с колонками «Надо брать», «Текст сообщения», «Дата», «Время», «Канал», «Тайминг», «Тема» и копирует результат в буфер обмена (TSV).
+// @version      1.10.0
+// @description  Выгружает текст сообщений из открытого канала/чата в веб-версии Telegram (Web K) в таблицу с колонками «Надо брать», «Текст сообщения», «Дата», «Время», «Канал», «Тайминг», «Тема» и копирует результат в буфер обмена (TSV); копит собранные каналы и выгружает их одной таблицей с пометкой дублей.
 // @author       vmsavelyev
 // @match        https://web.telegram.org/k/*
 // @grant        GM_registerMenuCommand
 // @grant        GM_setClipboard
+// @grant        GM_getValue
+// @grant        GM_setValue
 // @run-at       document-idle
 // ==/UserScript==
 
@@ -19,6 +21,398 @@
 
 (function () {
     "use strict";
+
+    // ---------- накопление каналов между запусками ----------
+    // Каждый запуск собирает один канал. Собранное складывается в хранилище Tampermonkey,
+    // чтобы потом выгрузить все каналы одной таблицей и пометить дубли между ними.
+    // Каналы, которые ожидаются в выгрузке (название — как в заголовке чата), — нужны
+    // только панели статуса, чтобы показать, какие из них ещё не собраны.
+    const EXPECTED_CHANNELS = ["MarketTwits", "СМАРТЛАБ НОВОСТИ", "Сигналы РЦБ"];
+    const STORE_KEY = "tgNewsStore";
+    const TSV_HEADER = "Надо брать\tТекст сообщения\tДата\tВремя\tКанал\tТайминг\tТема\tОбработано";
+
+    const pad2 = n => String(n).padStart(2, "0");
+    const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+    // "ДД.ММ.ГГГГ Ч:ММ:СС" -> unix-секунды (0, если формат не распознан)
+    function timingToSec(timing) {
+        const m = timing && timing.match(/^(\d{2})\.(\d{2})\.(\d{4}) (\d{1,2}):(\d{2}):(\d{2})$/);
+        return m ? new Date(+m[3], +m[2] - 1, +m[1], +m[4], +m[5], +m[6]).getTime() / 1000 : 0;
+    }
+    function fmtSec(sec) {
+        const d = new Date(sec * 1000);
+        return `${pad2(d.getDate())}.${pad2(d.getMonth() + 1)}.${d.getFullYear()} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+    }
+    function tsvLine(v, processed = "") {
+        return [v.importance, v.text, v.date, v.time, v.channel, v.timing, v.topic, processed].join("\t");
+    }
+
+    function storeGet() {
+        try {
+            const raw = typeof GM_getValue === "function" ? GM_getValue(STORE_KEY, null) : localStorage.getItem(STORE_KEY);
+            const s = typeof raw === "string" ? JSON.parse(raw) : raw;
+            if (s && s.items && s.channels) return s;
+        } catch (e) {
+            console.warn("[TG] не удалось прочитать накопленные новости:", e);
+        }
+        return { items: {}, channels: {} };
+    }
+    function storeSet(s) {
+        if (typeof GM_setValue === "function") GM_setValue(STORE_KEY, s);
+        else localStorage.setItem(STORE_KEY, JSON.stringify(s));
+    }
+
+    // сливает собранное за запуск в хранилище; повторный сбор того же канала или
+    // пересекающегося периода не создаёт копий (ключ — канал + id сообщения)
+    function mergeIntoStore(channel, values) {
+        const store = storeGet();
+        for (const v of values) {
+            const key = `${channel}|${v.id || `${v.timing}|${v.text.slice(0, 200)}`}`;
+            store.items[key] = {
+                channel, text: v.text, date: v.date, time: v.time, timing: v.timing,
+                tsSort: timingToSec(v.timing), importance: v.importance, topic: v.topic
+            };
+        }
+        store.channels[channel] = { lastRunAt: Date.now() };
+        storeSet(store);
+        return Object.keys(store.items).length;
+    }
+
+    async function copyResult(result) {
+        try {
+            if (typeof GM_setClipboard === "function") {
+                GM_setClipboard(result, "text");
+            } else {
+                await navigator.clipboard.writeText(result);
+            }
+            return true;
+        } catch (e) {
+            const a = document.createElement("textarea");
+            a.value = result;
+            a.style = `position:fixed;top:20px;left:20px;width:80vw;height:70vh;z-index:999999;
+                       background:#fff;color:#000;font-size:14px;padding:10px;border:3px solid red;`;
+            document.body.appendChild(a); a.focus(); a.select();
+            return false;
+        }
+    }
+
+    // ---------- поиск дублей между каналами ----------
+    // Дубль — более поздняя «Важно»-новость про тот же факт или развитие той же
+    // истории, что и более ранняя «Важно»-новость (из любого канала, включая тот же).
+    // Сравнение без LLM: множество «корней» слов (первые 5 букв) с весами IDF,
+    // чтобы вездесущие «россия/украина/трамп/санкции» почти не влияли на похожесть.
+    // Похожесть по словам дополняют «запреты» (dupConflict ниже): разные компании,
+    // разные цифры, разные люди, более поздняя стадия события, опровержение.
+    const DUP_WINDOW_H  = 24;   // насколько далеко назад (в часах) искать оригинал
+    const DUP_THRESHOLD = 0.5;  // порог взвешенного коэффициента пересечения (0..1)
+    const DUP_DIGEST_COMPANIES = 3; // со скольких упомянутых компаний пост считается сводкой
+    const DUP_MIN_ROOTS = 3;    // новости с меньшим числом значимых корней не сравниваем
+    const DUP_BOILERPLATE = /читать далее|мы в max|подробнее|mt в max/g;
+    const DUP_STOP_WORDS = new Set((
+        "что как все так его она они оно был была было были будет это этот эта эти того этого этой " +
+        "для при про под над без через после перед между или уже еще тоже также только даже если " +
+        "чем чтобы когда где кто там тут них ним нее ней него ему нам нас вас вам себя свою свой " +
+        "который которая которые которых года году лет день дня сегодня ранее заявил заявила заявили " +
+        "сообщил сообщила сообщили сообщает говорит считает отметил пишет данным источник источники " +
+        "the and for with from"
+    ).split(" "));
+
+    // стадии события (смотрим только «заголовок», см. dupHeadline):
+    // «намерение» — событие ещё не произошло
+    const STAGE_INTENT = /планир|может|могут|ожида|намер|собира|должн|рассмотрит|рассмотрят|рассматрива|рассмотрени|обсудит|обсудят|обсуждают|обсуждени|вероятн|готовит|предлага|призыва|хочет|хотят|еще нет|пока нет|пока не |проведут|пройдет|пройдут|состоится|встретится|встретятся|анонсир|примут участие|примет участие/;
+    // «началось» — событие идёт прямо сейчас
+    const STAGE_START = /начал[аи]?(?![a-zа-я])|началась|начались|стартовал|проводит|проходит/;
+    // «завершилось» — событие уже прошло, известны итоги
+    const STAGE_RESULT = /провел[аи]?(?![a-zа-я])|состоял(ась|ись|ся)|завершил|по итогам|итоги встречи|рассказал о встрече|встретил(ся|ась|ись)/;
+    // рассказ об итогах встречи часто начинается с цитаты, поэтому ищется по всему тексту
+    const STAGE_REPORT = /рассказал[аи]? о (встрече|переговорах)|по итогам (встречи|переговоров)|итоги (встречи|переговоров)/;
+    // опровержение/отказ — самостоятельная новость, а не пересказ опровергаемой
+    const STAGE_DENY = /фейк|опроверг|отклонил|отверг|не соответству|не планируется|дезинформац/;
+    // ключевое действие в прошедшем времени (законы, решения, ставки)
+    const STAGE_DONE = /(подписал|одобрил|принял|проголосовал|утвердил|согласовал|ввел|отменил|снизил|повысил|сохранил|запустил|завершил|заключил|разместил)[аи]?(?![a-zа-я])/g;
+    // синонимы одного и того же свершившегося действия («палата одобрила» = «проголосовала за»)
+    const STAGE_DONE_GROUP = { одобрил: "одобрил", проголосовал: "одобрил", принял: "одобрил", утвердил: "одобрил", согласовал: "одобрил" };
+
+    // люди и ведомства, чьи заявления/встречи/прогнозы отличают одну новость от другой:
+    // «Макрон настаивает на перемирии» — не дубль «Зеленский будет настаивать на перемирии»,
+    // прогноз Минэкономразвития — не дубль прогноза ОЭСР
+    const DUP_PERSONS = /трамп|путин|песков|лавров|рябков|зеленск|макрон|мерц|рубио|уиткофф|виткофф|кушнер|дмитриев|арагчи|фон дер ляйен|рютте|орбан|эрдоган|стармер|вэнс|нетаньяху|медведев|захаров|ушаков|набиуллин|силуанов|решетников|вадефул|сырск|буданов|ермак|сибиг|оэср|мвф|всемирн\S* банк|минэкономразвития|минфин|росстат|опек|еврокомисс/g;
+    // латинские хэштеги, которые не являются тикерами
+    const DUP_NON_TICKERS = new Set(["ipo", "spo", "fx", "ai", "etf", "opec", "nato", "usa", "us", "eu", "uk"]);
+    // общие темы из classifyTopic() — это не название компании
+    const DUP_GENERIC_TOPICS = new Set(["", "Украина", "Иран", "ЦБ", "Российская компания"]);
+
+    const dupNorm = text => text.toLowerCase().replace(/ё/g, "е");
+    // текст без пробелов и знаков, латинские буквы-двойники заменены кириллицей
+    // («ДОМ.PФ» с латинской P → «домрф») — для поиска названия компании в тексте
+    const LOOKALIKES = { a: "а", c: "с", e: "е", o: "о", p: "р", x: "х", y: "у", k: "к", m: "м", t: "т", b: "в", h: "н" };
+    const dupFlat = text => dupNorm(text).replace(/[^a-zа-я0-9]/g, "").replace(/[aceopxykmtbh]/g, c => LOOKALIKES[c]);
+    // ключ названия компании для поиска в тексте: первые 5 букв самого длинного слова
+    // названия без общих слов («Банк Санкт-Петербург» → «санкт», «ДОМ.РФ» → «домрф») —
+    // так он не зависит от падежа («банка Санкт-Петербург»)
+    const COMPANY_GENERIC_WORDS = new Set(["банк", "группа", "гк", "компания", "пао", "ао"]);
+    function companyKey(name) {
+        const words = dupNorm(name).split(/\s+/).filter(w => !COMPANY_GENERIC_WORDS.has(w)).map(dupFlat);
+        const longest = words.sort((a, b) => b.length - a.length)[0] || "";
+        return longest.length >= 3 ? longest.slice(0, 5) : "";
+    }
+
+    function dupRoots(text) {
+        const t = dupNorm(text)
+            .replace(/https?:\/\/\S+/g, " ")
+            .replace(/#[^\s#]+/g, " ")
+            .replace(DUP_BOILERPLATE, " ");
+        const roots = new Set();
+        for (const w of t.match(/[a-zа-я0-9]+/g) || []) {
+            if (w.length < 3 || DUP_STOP_WORDS.has(w)) continue;
+            roots.add(w.slice(0, 5));
+        }
+        return roots;
+    }
+
+    // «заголовок» — начало текста без хэштегов до указания источника (« — ТАСС»,
+    // « -- BBG»): в длинных постах дальше по тексту почти всегда есть «может/планирует»
+    // про последствия, а после источника часто идёт уже следующая новость
+    const DUP_HEADLINE_LEN = 160;
+    function dupHeadline(text) {
+        const t = dupNorm(text).replace(/#[^\s#]+/g, " ").replace(/\s+/g, " ").trim();
+        const src = t.search(/ (—|--) /);
+        return (src >= 30 ? t.slice(0, src) : t).slice(0, DUP_HEADLINE_LEN);
+    }
+
+    function dupStage(text) {
+        const t = dupHeadline(text);
+        const done = new Set();
+        for (const m of t.matchAll(STAGE_DONE)) done.add(STAGE_DONE_GROUP[m[1]] || m[1]);
+        const intent = STAGE_INTENT.test(t);
+        // порядок стадий события: 1 — план, 2 — идёт, 3 — прошло (0 — не определить)
+        const level = STAGE_RESULT.test(t) || STAGE_REPORT.test(dupNorm(text)) ? 3 : STAGE_START.test(t) ? 2 : intent ? 1 : 0;
+        return { intent, done, level, deny: STAGE_DENY.test(t) };
+    }
+
+    // «сущности» новости: тикеры (латинские хэштеги/кэштеги), значимые числа, люди,
+    // упомянутые компании (companyKeys — названия компаний из «Темы» всех новостей)
+    function dupEntities(it, companyKeys) {
+        const t = dupNorm(it.text);
+        const tickers = new Set();
+        for (const m of t.matchAll(/[#$]([a-z]{2,6})(?![a-z])/g)) if (!DUP_NON_TICKERS.has(m[1])) tickers.add(m[1]);
+        // числа: дробные или от 10, кроме годов — у дублей они совпадают (76,6 млрд,
+        // 200 руб/акц), а у похожих по шаблону новостей (два аукциона ОФЗ за день) — нет
+        const numbers = [];
+        for (const m of t.replace(/https?:\/\/\S+/g, " ").matchAll(/\d+(?:[.,]\d+)?/g)) {
+            const v = m[0].replace(",", ".");
+            if (/^(19|20)\d\d$/.test(v) || (!v.includes(".") && Number(v) < 10)) continue;
+            numbers.push(Number(v));
+        }
+        const persons = new Set(t.match(DUP_PERSONS) || []);
+        // компания из колонки «Тема» (первые 5 букв), если новость именно про неё —
+        // её название есть в самом тексте, а не только в хэштеге «связанного» тикера
+        const flat = dupFlat(it.text);
+        const key = DUP_GENERIC_TOPICS.has(it.topic || "") ? "" : companyKey(it.topic.split(", ")[0]);
+        const company = key && flat.includes(key) ? key : "";
+        const companies = new Set([...companyKeys].filter(k => flat.includes(k)));
+        return { tickers, numbers, persons, company, companies, flat };
+    }
+
+    const disjoint = (a, b) => a.size > 0 && b.size > 0 && ![...a].some(x => b.has(x));
+    // ни одно число не совпадает (с точностью 1% — «22,829 млрд» = «22.83 млрд»); у каждой
+    // новости должно быть хотя бы 2 числа, иначе разные показатели одного отчёта
+    // («выработка 4,8 млрд кВт-ч» и «нарастила на 2,5%») ошибочно разойдутся
+    const numbersDiffer = (a, b) => a.length >= 2 && b.length >= 2 &&
+        !a.some(x => b.some(y => Math.abs(x - y) <= 0.01 * Math.max(x, y)));
+
+    // причина, по которой cur не может быть дублем более ранней prev (или "" — если может)
+    function dupConflict(cur, prev) {
+        const a = cur.ent, b = prev.ent;
+        if (disjoint(a.tickers, b.tickers)) return "разные компании";
+        // тикер только у одной новости — компания должна упоминаться и во второй
+        if (a.tickers.size && !b.tickers.size && a.company && !b.flat.includes(a.company)) return "разные компании";
+        if (b.tickers.size && !a.tickers.size && b.company && !a.flat.includes(b.company)) return "разные компании";
+        // сводка по многим компаниям («прибыль ВТБ, ТБанка, Совкомбанка…») — не дубль
+        // новости про одну из них, и наоборот
+        if ((a.companies.size >= DUP_DIGEST_COMPANIES) !== (b.companies.size >= DUP_DIGEST_COMPANIES)) return "сводка по компаниям";
+        if (numbersDiffer(a.numbers, b.numbers)) return "разные цифры";
+        if (disjoint(a.persons, b.persons)) return "разные люди";
+        // «подписал» после «планирует подписать» — новое событие, а не дубль:
+        // свершившийся факт может быть дублем только новости о том же свершившемся
+        // действии (и без признаков намерения в ней)
+        if (cur.stage.done.size && !cur.stage.intent &&
+            (prev.stage.intent || ![...cur.stage.done].some(v => prev.stage.done.has(v)))) return "событие свершилось";
+        // «встреча началась/прошла» после «встреча ожидается» — следующая стадия события
+        if (prev.stage.level > 0 && cur.stage.level > prev.stage.level) return "следующая стадия";
+        if (cur.stage.deny && !prev.stage.deny) return "опровержение";
+        return "";
+    }
+
+    // items: [{ tsSort, importance, text, topic, ... }]. Возвращает Map<item, { origin, match, sim }>
+    // только для дублей: origin — самая ранняя новость группы, match — на какую
+    // новость текущая оказалась похожа сильнее всего, sim — эта похожесть.
+    function markDuplicates(items) {
+        const companyKeys = new Set();
+        for (const it of items) {
+            if (DUP_GENERIC_TOPICS.has(it.topic || "")) continue;
+            for (const name of it.topic.split(", ")) {
+                const k = companyKey(name);
+                if (k) companyKeys.add(k);
+            }
+        }
+        const df = new Map();
+        const prepared = items.map(it => {
+            const roots = dupRoots(it.text);
+            for (const r of roots) df.set(r, (df.get(r) || 0) + 1);
+            return { it, roots };
+        });
+        const n = prepared.length;
+        const idf = r => Math.log((n + 1) / (df.get(r) || 1));
+        const weight = roots => { let s = 0; for (const r of roots) s += idf(r); return s; };
+
+        const important = prepared
+            .filter(p => p.it.importance === "Важно" && p.roots.size >= DUP_MIN_ROOTS)
+            .sort((a, b) => a.it.tsSort - b.it.tsSort);
+        for (const p of important) {
+            p.w = weight(p.roots);
+            p.stage = dupStage(p.it.text);
+            p.ent = dupEntities(p.it, companyKeys);
+        }
+        const similarity = (a, b) => {
+            let common = 0;
+            for (const r of a.roots) if (b.roots.has(r)) common += idf(r);
+            const denom = Math.min(a.w, b.w);
+            return denom > 0 ? common / denom : 0;
+        };
+
+        const origin = new Map();
+        for (let i = 0; i < important.length; i++) {
+            const cur = important[i];
+            let best = null, bestSim = 0;
+            for (let j = i - 1; j >= 0; j--) {
+                const prev = important[j];
+                if (cur.it.tsSort - prev.it.tsSort > DUP_WINDOW_H * 3600) break;
+                if (dupConflict(cur, prev)) continue;
+                const sim = similarity(cur, prev);
+                if (sim > bestSim) { bestSim = sim; best = prev; }
+            }
+            if (!best || bestSim < DUP_THRESHOLD) continue;
+            const root = origin.get(best.it)?.origin || best.it;
+            origin.set(cur.it, { origin: root, match: best.it, sim: bestSim });
+        }
+        return origin;
+    }
+
+    // ---------- панель статуса и общая выгрузка ----------
+    function channelStats(store) {
+        const stats = {};
+        for (const it of Object.values(store.items)) {
+            const s = stats[it.channel] || (stats[it.channel] = { count: 0, important: 0, from: Infinity, to: 0 });
+            s.count++;
+            if (it.importance === "Важно") s.important++;
+            if (it.tsSort) { s.from = Math.min(s.from, it.tsSort); s.to = Math.max(s.to, it.tsSort); }
+        }
+        return stats;
+    }
+
+    function showStatusPanel(message = "") {
+        document.getElementById("tg-store-panel")?.remove();
+        const store = storeGet();
+        const stats = channelStats(store);
+        const names = [...new Set([...EXPECTED_CHANNELS, ...Object.keys(stats)])];
+
+        const rows = names.map(name => {
+            const s = stats[name];
+            if (!s) return `<tr style="color:#f88;"><td>${esc(name)}</td><td colspan="5">не собран</td><td></td></tr>`;
+            const at = store.channels[name]?.lastRunAt;
+            return `<tr><td>${esc(name)}</td><td>${s.count}</td><td>${s.important}</td>
+                <td>${s.to ? fmtSec(s.from) : "—"}</td><td>${s.to ? fmtSec(s.to) : "—"}</td>
+                <td>${at ? fmtSec(at / 1000) : "—"}</td>
+                <td><button data-del="${esc(name)}" title="Удалить новости канала из накопления"
+                    style="background:none;border:0;color:#f88;cursor:pointer;font-size:14px;">✕</button></td></tr>`;
+        }).join("");
+
+        // общий период, за который есть данные всех собранных каналов: дубли ищутся
+        // только между собранными новостями, поэтому на краях несовпадающих периодов
+        // оригинал может остаться несобранным, а дубль — не найтись
+        const warnings = [];
+        const missing = EXPECTED_CHANNELS.filter(n => !stats[n]);
+        if (missing.length) warnings.push(`Не собраны: ${missing.map(esc).join(", ")}.`);
+        const ranges = Object.values(stats).filter(s => s.to);
+        if (ranges.length >= 2) {
+            const from = Math.max(...ranges.map(s => s.from));
+            const to = Math.min(...ranges.map(s => s.to));
+            if (from > to) {
+                warnings.push("Периоды каналов не пересекаются — дубли между ними не найдутся.");
+            } else if (ranges.some(s => s.from < from - 3600 || s.to > to + 3600)) {
+                warnings.push(`Периоды каналов различаются — дубли на краях могут не найтись. Общий период: ${fmtSec(from)} — ${fmtSec(to)}.`);
+            }
+        }
+
+        const btn = "margin:8px 8px 0 0;padding:6px 10px;color:#fff;border:0;border-radius:6px;cursor:pointer;font-weight:bold;";
+        const panel = document.createElement("div");
+        panel.id = "tg-store-panel";
+        panel.style = `position:fixed;top:16px;right:16px;z-index:999999;background:#202020;color:#fff;
+                       padding:12px 16px;border-radius:10px;font:13px/1.4 Arial,sans-serif;max-width:90vw;
+                       max-height:85vh;overflow:auto;box-shadow:0 4px 18px rgba(0,0,0,.4);`;
+        panel.innerHTML = `<b>Накопленные новости</b>
+            ${message ? `<div style="margin-top:6px;color:#8f8;">${esc(message)}</div>` : ""}
+            <table style="margin-top:8px;border-collapse:collapse;white-space:nowrap;">
+                <tr style="color:#aaa;text-align:left;"><th>Канал</th><th>Новостей</th><th>«Важно»</th>
+                    <th>С</th><th>По</th><th>Собрано</th><th></th></tr>
+                ${rows}
+            </table>
+            ${warnings.map(w => `<div style="margin-top:6px;color:#fc6;">${w}</div>`).join("")}
+            <button id="tg-store-export" style="${btn}background:#2b5278;">Выгрузить все каналы (с дублями)</button>
+            <button id="tg-store-clear" style="${btn}background:#d33;">Очистить всё</button>
+            <button id="tg-store-close" style="${btn}background:#555;">Закрыть</button>`;
+        panel.querySelectorAll("td, th").forEach(c => { c.style.padding = "2px 8px 2px 0"; });
+        document.body.appendChild(panel);
+
+        panel.querySelector("#tg-store-close").onclick = () => panel.remove();
+        panel.querySelector("#tg-store-export").onclick = () => { exportAll().catch(console.error); };
+        panel.querySelector("#tg-store-clear").onclick = () => {
+            if (!confirm("Удалить все накопленные новости всех каналов?")) return;
+            storeSet({ items: {}, channels: {} });
+            showStatusPanel("Накопление очищено.");
+        };
+        panel.querySelectorAll("[data-del]").forEach(b => {
+            b.onclick = () => {
+                const name = b.getAttribute("data-del");
+                if (!confirm(`Удалить накопленные новости канала «${name}»?`)) return;
+                const s = storeGet();
+                for (const [k, it] of Object.entries(s.items)) if (it.channel === name) delete s.items[k];
+                delete s.channels[name];
+                storeSet(s);
+                showStatusPanel(`Канал «${name}» удалён из накопления.`);
+            };
+        });
+    }
+
+    async function exportAll() {
+        const items = Object.values(storeGet().items);
+        if (!items.length) { showStatusPanel("Накопленных новостей нет — сначала соберите каналы."); return; }
+        const dups = markDuplicates(items);
+        items.sort((a, b) => a.tsSort - b.tsSort || a.channel.localeCompare(b.channel));
+
+        // группы дублей: оригинал (самая ранняя новость) и все его дубли получают один
+        // номер «Дубль N»; номера идут по времени оригинала. У оригинала — пометка
+        // «(оригинал)», чтобы было видно, какая новость из группы остаётся.
+        const groupOf = new Map();
+        for (const d of dups.values()) if (!groupOf.has(d.origin)) groupOf.set(d.origin, 0);
+        let groups = 0;
+        for (const it of items) if (groupOf.has(it)) groupOf.set(it, ++groups);
+        const processed = it => {
+            if (groupOf.has(it)) return `Дубль ${groupOf.get(it)} (оригинал)`;
+            const d = dups.get(it);
+            return d ? `Дубль ${groupOf.get(d.origin)}` : "";
+        };
+
+        for (const it of items) {
+            const d = dups.get(it);
+            if (d) console.log(`[TG] Дубль ${groupOf.get(d.origin)} (похожесть ${d.sim.toFixed(2)}): ${it.channel} ${it.timing} «${it.text.slice(0, 80)}»\n` +
+                               `     оригинал: ${d.origin.channel} ${d.origin.timing} «${d.origin.text.slice(0, 80)}»`);
+        }
+        const result = TSV_HEADER + "\n" + items.map(it => tsvLine(it, processed(it))).join("\n");
+        const copied = await copyResult(result);
+        showStatusPanel(`Выгружено новостей: ${items.length}, групп дублей: ${groups}, дублей (без оригиналов): ${dups.size}. ` +
+                        (copied ? "Таблица скопирована в буфер обмена." : "Скопируйте таблицу из поля слева (Ctrl+C)."));
+    }
 
     async function runParser() {
     const SCROLL_RATIO = 2.5;
@@ -923,7 +1317,7 @@
         const timing = fmtTiming(date, time, ts);
         const importance = classifyImportance(text);
         const topic = classifyTopic(text.toLowerCase(), importance);
-        if (!data.has(key)) data.set(key, { sort: ts || (1e12 + data.size), date, line: `${importance}\t${text}\t${date}\t${time}\t${CHANNEL}\t${timing}\t${topic}` });
+        if (!data.has(key)) data.set(key, { sort: ts || (1e12 + data.size), id, channel: CHANNEL, text, date, time, timing, importance, topic });
         return true;
     }
 
@@ -1032,32 +1426,26 @@
             return !d || d >= STOP_DATE;
         });
     }
-    const rows = values.sort((a, b) => a.sort - b.sort).map(v => v.line);
-    const result = "Надо брать\tТекст сообщения\tДата\tВремя\tКанал\tТайминг\tТема\n" + rows.join("\n");
+    const rows = values.sort((a, b) => a.sort - b.sort).map(v => tsvLine(v));
+    const result = TSV_HEADER + "\n" + rows.join("\n");
     console.log(result);
 
+    // кладём канал в накопление — общая выгрузка всех каналов с пометкой дублей
+    // делается из панели статуса (пункт меню «Статус сбора / общая выгрузка»)
+    const total = mergeIntoStore(CHANNEL, values);
     const secs = ((performance.now() - started) / 1000).toFixed(1);
-    try {
-        if (typeof GM_setClipboard === "function") {
-            GM_setClipboard(result, "text");
-        } else {
-            await navigator.clipboard.writeText(result);
-        }
-        alert(`Готово за ${secs} c. Собрано: ${data.size}\nСкопировано в буфер обмена.`);
-    } catch (e) {
-        const a = document.createElement("textarea");
-        a.value = result;
-        a.style = `position:fixed;top:20px;left:20px;width:80vw;height:70vh;z-index:999999;
-                   background:#fff;color:#000;font-size:14px;padding:10px;border:3px solid red;`;
-        document.body.appendChild(a); a.focus(); a.select();
-        alert(`Готово за ${secs} c. Собрано: ${data.size}\nНажмите Ctrl+C.`);
-    }
+    const copied = await copyResult(result);
+    showStatusPanel(`Готово за ${secs} c. «${CHANNEL}»: собрано ${values.length}, ` +
+                    (copied ? "таблица канала скопирована в буфер обмена." : "скопируйте таблицу канала из поля слева (Ctrl+C).") +
+                    ` Всего в накоплении: ${total}.`);
     }
 
     if (typeof GM_registerMenuCommand === "function") {
         GM_registerMenuCommand("Собрать новости с канала", () => { runParser().catch(console.error); });
+        GM_registerMenuCommand("Статус сбора / общая выгрузка", () => showStatusPanel());
     } else {
-        console.warn("[TG-K] GM_registerMenuCommand недоступен — запустите runParser() вручную из консоли.");
+        console.warn("[TG-K] GM_registerMenuCommand недоступен — запустите runParser() или showStatusPanel() вручную из консоли.");
         window.runParser = runParser;
+        window.showStatusPanel = showStatusPanel;
     }
 })();
